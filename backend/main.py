@@ -23,3 +23,31 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"message": "Hello World"}
+
+
+# --- 여기에 새로운 API 두 개를 추가합니다 ---
+
+# 1. 헬스 체크 API
+@app.get("/api/health")
+def health_check():
+    """서버가 정상적으로 작동하는지 확인하는 API"""
+    return {"status": "ok"}
+
+# 2. 가짜 그래프 데이터 API
+@app.get("/api/dummy-graph")
+def get_dummy_graph():
+    """프론트엔드 그래프 시각화 테스트를 위한 가짜 데이터"""
+    dummy_graph_data = {
+        "nodes": [
+            {"data": {"id": "input_layer", "label": "Input"}},
+            {"data": {"id": "conv1", "label": "Conv2d"}},
+            {"data": {"id": "relu1", "label": "ReLU"}},
+            {"data": {"id": "output_layer", "label": "Linear"}},
+        ],
+        "edges": [
+            {"data": {"id": "e1", "source": "input_layer", "target": "conv1"}},
+            {"data": {"id": "e2", "source": "conv1", "target": "relu1"}},
+            {"data": {"id": "e3", "source": "relu1", "target": "output_layer"}},
+        ]
+    }
+    return dummy_graph_data

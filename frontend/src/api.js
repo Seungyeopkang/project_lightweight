@@ -16,5 +16,10 @@ export const getModelData = () => {
   return apiClient.get('/'); 
 };
 
-// 다른 API 함수들도 필요에 따라 추가할 수 있습니다.
-// export const pruneModel = (options) => apiClient.post('/prune', options);
+export const healthCheck = () => {
+  return apiClient.get('/api/health');
+};
+
+export const getDummyGraph = () => {
+  return apiClient.get('/api/dummy-graph');
+};
