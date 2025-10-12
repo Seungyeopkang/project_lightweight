@@ -1,5 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware # 1. CORSMiddleware 임포트
+import torch
+import torch.fx as fx
+import io
+import onnx
+
+
 
 # FastAPI 앱 인스턴스 생성
 app = FastAPI()
@@ -51,3 +57,49 @@ def get_dummy_graph():
         ]
     }
     return dummy_graph_data
+
+@app.post("/api/upload-model")
+async def upload_model(model_file: UploadFile = File(...)):
+    """ .onnx 모델 파일을 업로드받아 구조를 분석하고 JSON으로 반환합니다. """
+
+    if not model_file.filename.endswith('.onnx'):
+        raise HTTPException(status_code=400, detail="잘못된 파일 형식입니다. .onnx 파일을 업로드해주세요.")
+
+    try:
+        contents = await model_file.read()
+        onnx_model = onnx.load_from_string(contents)
+
+        nodes = []
+        edges = []
+        
+        # --- 여기가 수정된 부분 ---
+        
+        # 1. 먼저, 가중치/편향 등 '부품'(Initializer)의 이름 목록을 만들어 둡니다.
+        initializer_names = {initializer.name for initializer in onnx_model.graph.initializer}
+
+        # 2. 그래프의 실제 입력(Input)을 노드 목록에 추가합니다.
+        for input_node in onnx_model.graph.input:
+            # 부품 목록에 있는 입력은 건너뜁니다 (실제 데이터 입력만 추가).
+            if input_node.name not in initializer_names:
+                nodes.append({'data': {'id': input_node.name, 'label': f"Input\n{input_node.name}"}})
+
+        # 3. 중간 노드(레이어)들과 그 연결 관계(엣지)를 추가합니다.
+        for node in onnx_model.graph.node:
+            # 각 노드의 대표 ID는 첫 번째 출력(output) 이름을 사용합니다.
+            node_id = node.output[0]
+            node_label = node.op_type  # 'Conv', 'Relu' 등
+            
+            nodes.append({'data': {'id': node_id, 'label': node_label}})
+            
+            # 이 노드로 들어오는 입력들을 순회하며 엣지를 만듭니다.
+            for input_name in node.input:
+                # 입력이 '부품' 목록에 포함되어 있지 않은 경우에만 엣지를 생성합니다.
+                if input_name and input_name not in initializer_names:
+                    edges.append({'data': {'source': input_name, 'target': node_id}})
+        
+        # --- 수정 끝 ---
+        
+        return {"nodes": nodes, "edges": edges}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ONNX 모델 분석 중 오류 발생: {e}")
