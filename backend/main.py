@@ -14,6 +14,7 @@ app = FastAPI()
 # 지금은 리액트 개발 서버 주소만 추가합니다.
 origins = [
     "http://localhost:5173",
+    "http://127.0.0.1:5173", # Vite 개발 서버의 IP 주소 직접 접속 허용
 ]
 
 # 3. CORS 미들웨어 추가
@@ -60,7 +61,7 @@ def get_dummy_graph():
 
 @app.post("/api/upload-model")
 async def upload_model(model_file: UploadFile = File(...)):
-    """ .onnx 모델 파일을 업로드받아 구조를 분석하고 JSON으로 반환합니다. """
+    """ .onnx 모델 파일을 업로드받아 '해상도 기반 계층 구조'로 분석하고 JSON으로 반환합니다. """
 
     if not model_file.filename.endswith('.onnx'):
         raise HTTPException(status_code=400, detail="잘못된 파일 형식입니다. .onnx 파일을 업로드해주세요.")
@@ -68,38 +69,119 @@ async def upload_model(model_file: UploadFile = File(...)):
     try:
         contents = await model_file.read()
         onnx_model = onnx.load_from_string(contents)
+        graph = onnx_model.graph
 
         nodes = []
         edges = []
         
-        # --- 여기가 수정된 부분 ---
+        # --- 1단계: 해상도(Stage) 경계 식별 ---
         
-        # 1. 먼저, 가중치/편향 등 '부품'(Initializer)의 이름 목록을 만들어 둡니다.
-        initializer_names = {initializer.name for initializer in onnx_model.graph.initializer}
-
-        # 2. 그래프의 실제 입력(Input)을 노드 목록에 추가합니다.
-        for input_node in onnx_model.graph.input:
-            # 부품 목록에 있는 입력은 건너뜁니다 (실제 데이터 입력만 추가).
+        # { 'node_output_name': 'stage_id' }
+        node_to_stage_map = {}
+        # { 'node_output_name': 'node_op_type' }
+        node_type_map = {}
+        # 해상도를 변경하는 경계 연산자들
+        BOUNDARY_OPS = {'MaxPool', 'AveragePool', 'Upsample', 'Resize'}
+        
+        stage_count = 0
+        current_stage_id = f"Stage_{stage_count}"
+        
+        initializer_names = {init.name for init in graph.initializer}
+        
+        # 1-1. Input 노드 -> Stage_0 (Input)
+        current_stage_id = "Stage_Input"
+        nodes.append({'data': {'id': current_stage_id, 'label': 'Input', 'type': 'Input'}})
+        for input_node in graph.input:
             if input_node.name not in initializer_names:
-                nodes.append({'data': {'id': input_node.name, 'label': f"Input\n{input_node.name}"}})
+                node_to_stage_map[input_node.name] = current_stage_id
+                node_type_map[input_node.name] = 'Input'
 
-        # 3. 중간 노드(레이어)들과 그 연결 관계(엣지)를 추가합니다.
-        for node in onnx_model.graph.node:
-            # 각 노드의 대표 ID는 첫 번째 출력(output) 이름을 사용합니다.
+        stage_count += 1
+        current_stage_id = f"Stage_{stage_count}" # Stage_1 부터 시작
+
+        # 1-2. 그래프 노드 순회하며 Stage 할당
+        parent_nodes_created = {"Stage_Input"}
+
+        for node in graph.node:
             node_id = node.output[0]
-            node_label = node.op_type  # 'Conv', 'Relu' 등
             
-            nodes.append({'data': {'id': node_id, 'label': node_label}})
+            # 이 노드가 경계 연산자인지 확인
+            is_boundary = False
+            if node.op_type in BOUNDARY_OPS:
+                is_boundary = True
+            elif node.op_type == 'Conv':
+                # 'strides' 속성을 확인
+                for attr in node.attribute:
+                    if attr.name == 'strides' and any(s > 1 for s in attr.ints):
+                        is_boundary = True
+                        break
             
-            # 이 노드로 들어오는 입력들을 순회하며 엣지를 만듭니다.
+            # 현재 노드에 스테이지 할당
+            # 경계 노드 자신은 '이전' 스테이지의 마지막 노드로 간주합니다.
+            if current_stage_id not in parent_nodes_created:
+                nodes.append({'data': {'id': current_stage_id, 'label': current_stage_id, 'type': 'Stage'}})
+                parent_nodes_created.add(current_stage_id)
+            
+            node_to_stage_map[node_id] = current_stage_id
+            node_type_map[node_id] = node.op_type
+            
+            # 자식 노드도 생성 (부모 지정)
+            nodes.append({'data': {'id': node_id, 'label': node.op_type, 'type': node.op_type, 'parent': current_stage_id}})
+            
+            # 경계 노드였다면, 다음 노드를 위해 새 스테이지로 이동
+            if is_boundary:
+                stage_count += 1
+                current_stage_id = f"Stage_{stage_count}"
+
+        # 1-3. Output 노드 -> Stage_Output
+        output_stage_id = "Stage_Output"
+        nodes.append({'data': {'id': output_stage_id, 'label': 'Output', 'type': 'Output'}})
+        for output_node in graph.output:
+            node_to_stage_map[output_node.name] = output_stage_id
+            node_type_map[output_node.name] = 'Output'
+
+
+        # --- 2단계: 엣지 생성 (부모 간 / 자식 간) ---
+        parent_edges = set() # 부모 간 중복 엣지 방지
+
+        for node in graph.node:
+            target_node_id = node.output[0]
+            if target_node_id not in node_to_stage_map: continue
+            
+            target_parent = node_to_stage_map[target_node_id]
+
             for input_name in node.input:
-                # 입력이 '부품' 목록에 포함되어 있지 않은 경우에만 엣지를 생성합니다.
-                if input_name and input_name not in initializer_names:
-                    edges.append({'data': {'source': input_name, 'target': node_id}})
+                if input_name in initializer_names or input_name not in node_to_stage_map:
+                    continue
+                
+                source_node_id = input_name
+                source_parent = node_to_stage_map[source_node_id]
+
+                if source_parent == target_parent:
+                    # [자식 간 엣지] (같은 Stage 내부 연결)
+                    edges.append({'data': {'source': source_node_id, 'target': target_node_id}})
+                else:
+                    # [부모 간 엣지] (다른 Stage 간 연결)
+                    edge_tuple = (source_parent, target_parent)
+                    if edge_tuple not in parent_edges:
+                        edges.append({'data': {'source': source_parent, 'target': target_parent}})
+                        parent_edges.add(edge_tuple)
         
-        # --- 수정 끝 ---
-        
+        # 마지막으로, Output 노드와 연결되는 부모 엣지 추가
+        for output_node in graph.output:
+            for node in graph.node:
+                if output_node.name in node.output:
+                    source_parent = node_to_stage_map[node.output[0]]
+                    target_parent = output_stage_id
+                    
+                    edge_tuple = (source_parent, target_parent)
+                    if edge_tuple not in parent_edges:
+                        edges.append({'data': {'source': source_parent, 'target': target_parent}})
+                        parent_edges.add(edge_tuple)
+
         return {"nodes": nodes, "edges": edges}
 
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"ONNX 모델 분석 중 오류 발생: {e}")

@@ -1,73 +1,88 @@
 import React, { useEffect, useRef } from 'react';
 import useStore from '../store';
-import cytoscape from 'cytoscape'; // 라이브러리 직접 import
+import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import expandCollapse from 'cytoscape-expand-collapse'; // 1. 라이브러리 import
 
-cytoscape.use(dagre); // cytoscape에 dagre 확장 기능 등록
+cytoscape.use(dagre);
+cytoscape.use(expandCollapse); // 2. 라이브러리 등록
 
 function GraphViewer() {
   const { modelJson } = useStore();
-  const graphContainerRef = useRef(null); // 그래프가 그려질 div
-  const cyInstance = useRef(null);      // 생성된 그래프 인스턴스를 저장할 공간
+  const graphContainerRef = useRef(null);
+  const cyRef = useRef(null);
 
-  // 1. 컴포넌트가 처음 생길 때 '단 한 번만' 실행되는 부분
   useEffect(() => {
-    // 그래프 인스턴스를 초기화합니다. 아직 데이터는 비어있습니다.
-    if (graphContainerRef.current && !cyInstance.current) {
-      cyInstance.current = cytoscape({
+    if (!modelJson || !graphContainerRef.current) {
+      return;
+    }
+
+    const animationFrameId = requestAnimationFrame(() => {
+      if (!graphContainerRef.current) return;
+      if (cyRef.current) cyRef.current.destroy();
+
+      const elements = [...modelJson.nodes, ...modelJson.edges];
+
+      cyRef.current = cytoscape({
         container: graphContainerRef.current,
-        elements: [], // 처음엔 비어있는 상태로 시작
-        style: [
-          { selector: 'node', style: { 'background-color': '#888', 'label': 'data(id)' } },
-          { selector: 'edge', style: { 'width': 2, 'line-color': '#555' } }
+        elements: elements,
+        style: [ // 스타일 시트는 그대로 유지
+          { selector: 'node', style: { 'background-color': '#888', 'label': 'data(label)' } },
+          { selector: 'edge', style: { 'width': 2, 'line-color': '#555', 'target-arrow-color': '#555', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+          { selector: 'node[type="Input"]', style: { 'background-color': '#22c55e' } },
+          { selector: 'node[type="Output"]', style: { 'background-color': '#ef4444' } },
+          { selector: 'node[type="Conv"]', style: { 'background-color': '#3b82f6', 'shape': 'rectangle' } },
+          { selector: 'node[type="Relu"]', style: { 'background-color': '#f59e0b' } },
+          { selector: 'node[type="Add"]', style: { 'background-color': '#a855f7', 'shape': 'diamond' } },
+          { selector: 'node[type="MaxPool"]', style: { 'background-color': '#6366f1', 'shape': 'diamond' } },
+          { selector: ':parent', style: { 'background-opacity': 0.2, 'background-color': '#999', 'border-color': '#999', 'border-width': 2, 'font-size': 18, 'font-weight': 'bold', 'text-valign': 'top', 'text-halign': 'center' } }
         ],
         layout: { name: 'preset' },
         userPanningEnabled: true,
         userZoomingEnabled: true,
       });
-    }
 
-    // 컴포넌트가 사라질 때 그래프 인스턴스를 파괴하여 메모리 누수 방지
+      // 3. 확장/축소 API를 가져옵니다.
+      const api = cyRef.current.expandCollapse({
+        layoutBy: {
+          name: "dagre",
+          rankDir: 'TB',
+          spacingFactor: 1.2,
+          fit: true,
+          padding: 30
+        },
+        fisheye: false,
+        animate: true,
+      });
+
+      // 4. ★★★★★
+      //    모든 노드를 '축소된(collapsed)' 상태로 시작합니다.
+      //    이것이 자식 노드를 숨기는 핵심입니다.
+      api.collapseAll();
+
+      // 5. 이제 '부모 노드'만을 대상으로 dagre 레이아웃을 실행합니다.
+      cyRef.current.layout({
+        name: 'dagre',
+        rankDir: 'TB', // Top-to-Bottom
+        spacingFactor: 1.5
+      }).run();
+
+      // 6. 부모 노드들만 보이도록 뷰를 맞춥니다.
+      //    cyRef.current.nodes(':parent') -> 부모 노드만 선택
+      cyRef.current.fit(cyRef.current.nodes(':parent'), 30); // 30px 여백
+
+    });
+
     return () => {
-      if (cyInstance.current) {
-        cyInstance.current.destroy();
-        cyInstance.current = null;
-      }
+      cancelAnimationFrame(animationFrameId);
+      if (cyRef.current) cyRef.current.destroy();
     };
-  }, []); // 의존성 배열이 비어있어, 마운트될 때 딱 한 번만 실행됩니다.
-
-  // 2. 'modelJson' 데이터가 바뀔 때만 실행되는 부분
-  useEffect(() => {
-    // 그래프 인스턴스가 준비되었고, 새로운 모델 데이터가 들어왔을 때
-    if (cyInstance.current && modelJson) {
-      const cy = cyInstance.current;
-      const elements = [...modelJson.nodes, ...modelJson.edges];
-
-      // 브라우저가 DOM 계산을 완료할 시간을 줍니다.
-      const timer = setTimeout(() => {
-        // 기존 요소를 모두 지우고 새로운 요소로 교체합니다.
-        cy.elements().remove();
-        cy.add(elements);
-
-        // 새 데이터에 맞춰 레이아웃을 다시 실행합니다.
-        const layout = cy.layout({ name: 'dagre', rankDir: 'TB' });
-        layout.run();
-
-        // 레이아웃 실행이 끝난 후, 뷰포트에 맞춥니다.
-        layout.promiseOn('layoutstop').then(() => {
-          cy.fit(null, 30); // 30px 여백
-        });
-      }, 100);
-
-      return () => clearTimeout(timer);
-    }
-  }, [modelJson]); // 이 로직은 오직 modelJson이 바뀔 때만 실행됩니다.
+  }, [modelJson]);
 
   if (!modelJson) {
     return null;
   }
 
-  // 실제로는 이 비어있는 div에 useEffect 훅이 그래프를 그려넣습니다.
   return (
     <div
       ref={graphContainerRef}

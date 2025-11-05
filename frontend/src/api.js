@@ -2,9 +2,6 @@ import axios from 'axios';
 
 const apiClient = axios.create({
   baseURL: 'http://localhost:8000',
-  headers: {
-    'Content-Type': 'application/json',
-  },
 });
 
 export const healthCheck = () => {
@@ -20,9 +17,5 @@ export const uploadModel = (file) => {
   const formData = new FormData();
   formData.append("model_file", file);
 
-  return apiClient.post('/api/upload-model', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  return apiClient.post('/api/upload-model', formData);
 };
