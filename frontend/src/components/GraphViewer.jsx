@@ -2,207 +2,207 @@ import React, { useEffect, useRef } from 'react';
 import useStore from '../store';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import expandCollapse from 'cytoscape-expand-collapse';
-
 cytoscape.use(dagre);
-cytoscape.use(expandCollapse);
 
 function GraphViewer() {
   const { modelJson } = useStore();
   const graphContainerRef = useRef(null);
   const cyRef = useRef(null);
-  const apiRef = useRef(null);
 
   useEffect(() => {
     if (!modelJson || !graphContainerRef.current) return;
     if (cyRef.current) cyRef.current.destroy();
 
+    // --- True Netron Style: Flat & Vertical ---
+    // 가독성을 위해 "Stage" 박스를 제거하고(Flatten), 모든 노드를 일렬로 배치합니다.
+    const flatNodes = modelJson.nodes.map(node => ({
+      data: { ...node.data, parent: undefined } // 부모(Stage) 종속성 제거
+    }));
+    const elements = [...flatNodes, ...modelJson.edges];
+
     const cy = cytoscape({
       container: graphContainerRef.current,
-      elements: [...modelJson.nodes, ...modelJson.edges],
+      elements: elements,
       style: [
+        // --- Dark Theme Node Base ---
         {
           selector: 'node',
           style: {
-            'background-color': '#777',
-            'label': 'data(label)',
-            'font-size': 20,
+            'shape': 'round-rectangle',
+            'background-color': '#404040', // Netron Default Gray
+            'border-width': 0,
+            'label': (n) => {
+               const data = n.data();
+               let label = data.label; // Op Type (e.g., Conv)
+               
+               // 속성 정보 추가 (W, B 등)
+               if(data.attributes) {
+                   if(data.attributes.W) label += `\nW (${data.attributes.W.join('x')})`;
+                   if(data.attributes.B) label += `\nB (${data.attributes.B.join('x')})`;
+                   if(data.attributes.kernel_shape) label += `\nks: ${data.attributes.kernel_shape.join('x')}`;
+                   if(data.attributes.strides) label += `\nstr: ${data.attributes.strides.join('x')}`;
+               }
+               return label;
+            },
+            'color': '#ececec', // Light Gray Text
+            'font-size': 10,
+            'font-family': 'Menlo, Consolas, monospace', // 코드 느낌 폰트
+            'font-weight': 'normal',
             'text-valign': 'center',
             'text-halign': 'center',
-            'color': '#fff',
-            'width': 120,
-            'height': 70,
-            'text-outline-color': '#000',
-            'text-outline-width': 2
+            'width': 'label',
+            'height': 'label',
+            'padding': '8px', // 패딩을 줄여서 타이트하게
+            'text-wrap': 'wrap',
+            'text-max-width': 120,
+            'text-justification': 'center',
+            'shadow-blur': 0,
+            'text-margin-y': 0
           }
         },
+        // --- Netron-Specific Operator Styling ---
+        {
+          selector: "node[type = 'Conv']",
+          style: { 
+            'background-color': '#3a5e8c', // Netron Blue
+            'border-color': '#283c5a',
+            'border-width': 1,
+            'shape': 'round-rectangle',
+            'color': '#ffffff',
+            'font-weight': 'bold',
+            'text-valign': 'center'
+          }
+        },
+        {
+          selector: "node[type = 'Gemm'], node[type = 'MatMul']", // Fully Connected
+          style: { 'background-color': '#3a5e8c', 'color': '#ffffff', 'font-weight': 'bold' } 
+        },
+        {
+          selector: "node[type = 'MaxPool'], node[type = 'AveragePool'], node[type = 'GlobalAveragePool']",
+          style: { 'background-color': '#386c48', 'color': '#e8f5e9' } // Netron Green
+        },
+        {
+          selector: "node[type = 'Relu'], node[type = 'LeakyRelu'], node[type = 'Sigmoid']",
+          style: { 
+             'background-color': '#8c3a3a', // Netron Red/Brown
+             'width': 60,
+             'height': 30,
+             'font-size': 9
+          }
+        },
+        {
+          selector: "node[type = 'Add'], node[type = 'Concat']",
+          style: { 'background-color': '#404040', 'border-width': 1, 'border-color': '#606060' } // Basic Gray
+        },
+        {
+           selector: "node[type = 'Input']",
+           style: { 
+             'background-color': '#e0e0e0', // Light Gray 
+             'color': '#333',
+             'font-weight': 'bold',
+             'border-radius': 4
+           }
+        },
+        {
+           selector: "node[type = 'Output']",
+           style: { 
+             'background-color': '#e0e0e0', 
+             'color': '#333',
+             'font-weight': 'bold'
+           }
+        },
+        {
+          selector: ':selected',
+          style: {
+            'border-color': '#d4d4d4', // White selection border
+            'border-width': 2,
+            'shadow-blur': 10,
+            'shadow-color': '#000'
+          }
+        },
+        // --- Edges ---
         {
           selector: 'edge',
           style: {
-            'width': 4,
-            'line-color': '#888',
-            'target-arrow-color': '#888',
+            'width': 1.5,
+            'line-color': '#707070',       // Darker Gray lines
+            'target-arrow-color': '#707070',
             'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier'
+            'curve-style': 'bezier',
+            'arrow-scale': 0.8
           }
         },
         {
-          selector: 'node[type="Input"]',
-          style: {
-            'background-color': '#22c55e',
-            'shape': 'rectangle',
-            'width': 220,
-            'height': 110,
-            'font-size': 30,
-            'font-weight': 'bold'
-          }
-        },
-        {
-          selector: 'node[type="Output"]',
-          style: {
-            'background-color': '#ef4444',
-            'shape': 'rectangle',
-            'width': 220,
-            'height': 110,
-            'font-size': 30,
-            'font-weight': 'bold'
-          }
-        },
-        {
-          selector: 'node[type="Conv"]',
-          style: {
-            'background-color': '#3b82f6',
-            'shape': 'rectangle',
-            'width': 140,
-            'height': 70
-          }
-        },
-        {
-          selector: 'node[type="Relu"]',
-          style: {
-            'background-color': '#fbbf24',
-            'shape': 'ellipse',
-            'width': 120,
-            'height': 60
-          }
-        },
-        {
-          selector: 'node[type="MaxPool"]',
-          style: {
-            'background-color': '#6366f1',
-            'shape': 'round-rectangle',
-            'width': 130,
-            'height': 65
-          }
-        },
-        {
-          selector: ':parent',
-          style: {
-            'shape': 'rectangle',
-            'background-opacity': 0.35,
-            'background-color': '#333',
-            'border-color': '#aaa',
-            'border-width': 8,
-            'font-size': 48,
-            'font-weight': 'bold',
-            'color': '#fff',
-            'text-outline-color': '#000',
-            'text-outline-width': 4,
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'padding': '40px',
-            'width': 900,
-            'height': 300
-          }
-        },
-        {
-          selector: ':parent:selected',
-          style: {
-            'border-color': '#3b82f6',
-            'border-width': 8
-          }
+           selector: 'edge:selected',
+           style: { 'line-color': '#ececec', 'target-arrow-color': '#ececec', 'width': 2.5 }
         }
       ],
       layout: { name: 'preset' },
-      minZoom: 0.3,
-      maxZoom: 4,
-      wheelSensitivity: 0.1
+      minZoom: 0.4, // 너무 작아지지 않게 제한
+      maxZoom: 2.0,
+      wheelSensitivity: 0.2, // 스크롤 속도 부드럽게
+      boxSelectionEnabled: false // 드래그 선택 비활성화 (팬 기능과 충돌 방지)
     });
 
     cyRef.current = cy;
 
-    // Expand/Collapse 초기화
-    apiRef.current = cy.expandCollapse({
-      layoutBy: {
+    // --- Clean Vertical Layout ---
+    const runLayout = () => {
+      const layout = cy.layout({
         name: 'dagre',
         rankDir: 'TB',
-        spacingFactor: 2.0,
-        nodeSep: 180,
-        rankSep: 200,
-        fit: true,
-        padding: 100
-      },
-      animate: true,
-      fisheye: false,
-      animationDuration: 400
+        align: 'UL',
+        ranker: 'tight-tree', 
+        nodeSep: 50,
+        rankSep: 60,
+        padding: 50,
+        animate: true,
+        animationDuration: 600,
+        fit: false // ★ 중요: 억지로 한 화면에 구겨넣지 않음 (깨알 글씨 방지)
+      });
+
+      layout.run();
+
+      layout.promiseOn('layoutstop').then(() => {
+          // 1. 줌 레벨을 적당히 고정 (1.0 = 100%)
+          cy.zoom(0.8);
+          
+          // 2. 맨 위(Input) 노드로 이동
+          const inputNode = cy.nodes()[0]; // 보통 첫 번째가 Input이거나 위쪽
+          if (inputNode) {
+              cy.center(inputNode);
+              // 살짝 아래로 내리기 (여백 확보)
+              cy.panBy({ x: 0, y: 100 });
+          } else {
+              cy.center();
+          }
+      });
+    };
+
+    runLayout();
+
+    // 더블클릭: 줌 리셋 (Fit)
+    cy.on('dblclick', (evt) => {
+         cy.animation({
+            fit: { eles: cy.elements(), padding: 50 },
+            duration: 500,
+            easing: 'ease-in-out-cubic'
+         }).play();
     });
 
-    // 초기 Stage 크기 고정
-    cy.nodes(':parent').forEach(node => {
-      node.style({ width: 900, height: 300 });
-    });
-
-    apiRef.current.collapseAll();
-
-    // 첫 레이아웃 및 확대 조정
-    const layout = cy.layout({
-      name: 'dagre',
-      rankDir: 'TB',
-      spacingFactor: 1.5,
-      nodeSep: 150,
-      rankSep: 150,
-      animate: true
-    });
-    layout.run();
-
-    layout.promiseOn('layoutstop').then(() => {
-      cy.fit(cy.nodes(':visible'), 50);
-      cy.zoom(cy.zoom() * 1.4);
-      cy.center();
-    });
-
-    // 줌 기반 자동 확장/축소
-    let lastZoom = cy.zoom();
-    const EXPAND_THRESHOLD = 1.4;
-    const COLLAPSE_THRESHOLD = 0.9;
-
-    cy.on('zoom', () => {
-      const currentZoom = cy.zoom();
-      const parents = cy.nodes(':parent');
-
-      if (currentZoom >= EXPAND_THRESHOLD && lastZoom < EXPAND_THRESHOLD) {
-        parents.forEach(n => {
-          if (n.hasClass('cy-expand-collapse-collapsed-node')) apiRef.current.expand(n);
-        });
-        cy.layout({ name: 'dagre', animate: true }).run();
-      } else if (currentZoom <= COLLAPSE_THRESHOLD && lastZoom > COLLAPSE_THRESHOLD) {
-        parents.forEach(n => {
-          if (!n.hasClass('cy-expand-collapse-collapsed-node')) apiRef.current.collapse(n);
-        });
-        cy.layout({ name: 'dagre', animate: true }).run();
-      }
-      lastZoom = currentZoom;
-    });
-
-    // 더블클릭으로 Stage 확장/축소
-    cy.on('dblclick', 'node:parent', evt => {
-      const node = evt.target;
-      if (node.hasClass('cy-expand-collapse-collapsed-node')) {
-        apiRef.current.expand(node);
-      } else {
-        apiRef.current.collapse(node);
-      }
-      cy.layout({ name: 'dagre', animate: true }).run();
+    // 클릭: 속성 보기
+    cy.on('tap', 'node', evt => {
+        const node = evt.target;
+        const attrs = node.data('attributes');
+        
+        // 부모 노드(Stage)가 아닌 경우에만 선택
+        if (!node.isParent()) {
+            useStore.getState().setSelectedNode(node.data());
+            
+            // 선택된 노드 강조 효과 (선택 노드 외에는 투명도 조절 etc. - 여기선 간단히 테두리만)
+            cy.nodes().removeClass('selected');
+            node.addClass('selected');
+        }
     });
 
     return () => {
@@ -216,21 +216,26 @@ function GraphViewer() {
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <div
         ref={graphContainerRef}
-        style={{ width: '100%', height: '100%', backgroundColor: '#1a1a1a' }}
+        style={{ width: '100%', height: '100%', backgroundColor: '#2d2d2d' }}
       />
+
+      {/* 힌트 메시지 업데이트 */}
       <div
         style={{
           position: 'absolute',
-          top: 10,
-          right: 10,
+          bottom: 20,
+          left: 20,
           backgroundColor: 'rgba(0,0,0,0.7)',
-          color: 'white',
-          padding: '8px 12px',
-          borderRadius: 4,
-          fontSize: 14
+          color: '#e2e8f0',
+          padding: '10px 16px',
+          borderRadius: 8,
+          fontSize: 14,
+          pointerEvents: 'none',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
         }}
       >
-        💡 확대하면 Stage 내부 Conv/Relu 표시 / 더블클릭으로 수동 확장
+        🖱️ <b>Double Click</b>: 펼치기/접기/확대 <br/>
+        🖱️ <b>Click</b>: 속성 보기 (좌측 패널)
       </div>
     </div>
   );

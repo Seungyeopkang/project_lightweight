@@ -16,4 +16,12 @@ __pycache__/
 
 # IDEs
 .vscode/
+!.vscode/settings.json
 .idea/
+
+# Local Dev Scripts
+dev.sh
+
+# Temporary Artifacts for Quantization
+temp_*.onnx
+quantized_*.onnx

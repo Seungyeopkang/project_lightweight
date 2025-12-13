@@ -1,9 +1,14 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import FileResponse
+
 from fastapi.middleware.cors import CORSMiddleware # 1. CORSMiddleware 임포트
 import torch
 import torch.fx as fx
 import io
 import onnx
+from onnxruntime.quantization import quantize_dynamic, QuantType
+import os
+
 
 
 
@@ -87,6 +92,7 @@ async def upload_model(model_file: UploadFile = File(...)):
         current_stage_id = f"Stage_{stage_count}"
         
         initializer_names = {init.name for init in graph.initializer}
+        initializer_map = {init.name: init for init in graph.initializer} # Shape 조회를 위한 맵
         
         # 1-1. Input 노드 -> Stage_0 (Input)
         current_stage_id = "Stage_Input"
@@ -125,8 +131,52 @@ async def upload_model(model_file: UploadFile = File(...)):
             node_to_stage_map[node_id] = current_stage_id
             node_type_map[node_id] = node.op_type
             
-            # 자식 노드도 생성 (부모 지정)
-            nodes.append({'data': {'id': node_id, 'label': node.op_type, 'type': node.op_type, 'parent': current_stage_id}})
+            # 속성 추출 (커널 크기, 스트라이드 등)
+            attributes = {}
+            for attr in node.attribute:
+                if attr.type == 1: # FLOAT
+                    attributes[attr.name] = attr.f
+                elif attr.type == 2: # INT
+                    attributes[attr.name] = attr.i
+                elif attr.type == 3: # STRING
+                    attributes[attr.name] = attr.s.decode('utf-8')
+                elif attr.type == 6: # FLOATS
+                    attributes[attr.name] = list(attr.floats)
+                elif attr.type == 7: # INTS
+                    attributes[attr.name] = list(attr.ints)
+                elif attr.type == 8: # STRINGS
+                    attributes[attr.name] = [s.decode('utf-8') for s in attr.strings]
+
+            # [New] Initializer(가중치/바이어스) 형상 추출
+            # 노드의 input 중 initializer에 있는 것이 있다면 그 shape를 기록
+            input_shapes = {}
+            for input_name in node.input:
+                if input_name in initializer_map:
+                    tensor = initializer_map[input_name]
+                    # 일반적으로 첫번째 input은 데이터, 두번째는 가중치(W), 세번째는 바이어스(B)
+                    # 이름에 'weight'나 'bias'가 포함되어 있으면 더 명확하지만, 
+                    # 순서나 initializer 존재 여부로 판단하는 것이 일반적
+                    dims = list(tensor.dims)
+                    
+                    # 간단한 매핑: 보통 W는 rank 4 (Conv) or rank 2 (Gemm)
+                    label_key = 'param'
+                    if len(dims) == 4: label_key = 'W' 
+                    elif len(dims) == 1: label_key = 'B'
+                    elif 'weight' in input_name: label_key = 'W'
+                    elif 'bias' in input_name: label_key = 'B'
+                    
+                    attributes[label_key] = dims
+
+            # 자식 노드도 생성 (부모 지정 + 속성 추가)
+            nodes.append({
+                'data': {
+                    'id': node_id, 
+                    'label': node.op_type, 
+                    'type': node.op_type, 
+                    'parent': current_stage_id,
+                    'attributes': attributes # 속성 정보 전달
+                }
+            })
             
             # 경계 노드였다면, 다음 노드를 위해 새 스테이지로 이동
             if is_boundary:
@@ -185,3 +235,44 @@ async def upload_model(model_file: UploadFile = File(...)):
         import traceback
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"ONNX 모델 분석 중 오류 발생: {e}")
+
+@app.post("/api/quantize")
+async def quantize_model(model_file: UploadFile = File(...)):
+    """ .onnx 파일을 받아 Dynamic Quantization(INT8)을 적용하고 파일을 반환합니다. """
+    
+    if not model_file.filename.endswith('.onnx'):
+        raise HTTPException(status_code=400, detail="잘못된 파일 형식입니다. .onnx 파일을 업로드해주세요.")
+
+    temp_input_path = f"temp_{model_file.filename}"
+    temp_output_path = f"quantized_{model_file.filename}"
+
+    try:
+        # 1. 업로드된 파일 저장
+        contents = await model_file.read()
+        with open(temp_input_path, "wb") as f:
+            f.write(contents)
+
+        # 2. 양자화 수행 (Float32 -> Int8)
+        # optimize_model=False로 두어 순수 양자화만 수행 (그래프 최적화는 별도 단계)
+        quantize_dynamic(
+            temp_input_path,
+            temp_output_path,
+            weight_type=QuantType.QUInt8
+        )
+
+        # 3. 결과 파일 반환
+        return FileResponse(
+            path=temp_output_path,
+            filename=temp_output_path,
+            media_type='application/octet-stream'
+        )
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"양자화 중 오류 발생: {e}")
+    finally:
+        # 정리: 입력 파일 삭제 (출력 파일은 전송 후 FastAPI가 알아서 처리하지 않으므로, 
+        # BackgroundTask를 써야하지만 일단 간단히 처리. 실제로는 주기적 삭제 필요)
+        if os.path.exists(temp_input_path):
+            os.remove(temp_input_path)

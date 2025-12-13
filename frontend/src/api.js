@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8000',
+  // baseURL removed to use relative path (Vite proxy)
 });
 
 export const healthCheck = () => {

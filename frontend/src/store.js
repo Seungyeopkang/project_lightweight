@@ -8,11 +8,13 @@ const useStore = create((set) => ({
   modelJson: null,
   // 모델 성능 결과를 저장할 상태
   performanceResults: null,
+  selectedNode: null,
 
   // --- 상태 변경 함수 (Actions) ---
   // 상태를 업데이트하는 기본 함수들
   setModelJson: (json) => set({ modelJson: json }),
   setPerformanceResults: (results) => set({ performanceResults: results }),
+  setSelectedNode: (node) => set({ selectedNode: node }),
 
   // 2. API를 호출하고 상태를 업데이트하는 새로운 액션을 추가합니다.
   fetchGraphData: async () => {
