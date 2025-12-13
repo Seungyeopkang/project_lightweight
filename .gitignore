@@ -1,0 +1,19 @@
+# System files
+.DS_Store
+Thumbs.db
+
+# Environment & Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+.venv
+.env
+
+# Large Data & Models
+*.onnx
+*.pt
+*.pth
+
+# IDEs
+.vscode/
+.idea/
