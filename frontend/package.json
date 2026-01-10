@@ -10,13 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "axios": "^1.12.2",
+    "axios": "^1.13.2",
     "cytoscape": "^3.33.1",
     "cytoscape-dagre": "^2.5.0",
     "cytoscape-expand-collapse": "^4.1.1",
     "react": "^19.1.1",
     "react-cytoscapejs": "^2.0.0",
     "react-dom": "^19.1.1",
+    "react-toastify": "^11.0.5",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

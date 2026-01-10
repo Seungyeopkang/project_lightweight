@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+onnx
+onnxruntime
+torch
+python-multipart

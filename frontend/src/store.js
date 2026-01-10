@@ -1,32 +1,57 @@
+// Improved store with model path tracking
 import { create } from 'zustand';
-import { getDummyGraph } from './api'; // 1. api.js에서 getDummyGraph 함수를 가져옵니다.
 
-// 앱의 전역 상태를 생성합니다.
 const useStore = create((set) => ({
-  // --- 상태 (State) ---
-  // 모델 구조(JSON)를 저장할 상태
+  // Model data
   modelJson: null,
-  // 모델 성능 결과를 저장할 상태
-  performanceResults: null,
+  graphData: null,
   selectedNode: null,
-
-  // --- 상태 변경 함수 (Actions) ---
-  // 상태를 업데이트하는 기본 함수들
-  setModelJson: (json) => set({ modelJson: json }),
-  setPerformanceResults: (results) => set({ performanceResults: results }),
+  currentModel: null,  // Track current model file path
+  sessionId: null,  // NEW: for web mode session management
+  
+  // Metrics tracking
+  originalMetrics: null,
+  optimizedMetrics: null,
+  
+  // Actions
+  updateGraphData: (data) => set({ 
+    modelJson: data, 
+    graphData: data 
+  }),
+  
   setSelectedNode: (node) => set({ selectedNode: node }),
+  
+  setCurrentModel: (modelPath) => set({ currentModel: modelPath }),
 
-  // 2. API를 호출하고 상태를 업데이트하는 새로운 액션을 추가합니다.
+  setSessionId: (id) => set({ sessionId: id }),  // NEW
+  
+  setOriginalMetrics: (metrics) => set({ originalMetrics: metrics }),
+  
+  setOptimizedMetrics: (metrics) => set({ optimizedMetrics: metrics }),
+  
+  clearMetrics: () => set({ 
+    originalMetrics: null, 
+    optimizedMetrics: null 
+  }),
+  
+  // Fetch graph data (legacy compatibility)
   fetchGraphData: async () => {
     try {
-      const response = await getDummyGraph();
-      // API 호출에 성공하면, 받아온 데이터(response.data)로 modelJson 상태를 업데이트합니다.
-      set({ modelJson: response.data });
-      console.log('📊 Graph data loaded into store successfully!');
+      const isElectron = window.electronAPI?.isElectron;
+      if (isElectron) {
+        const result = await window.electronAPI.getDummyGraph();
+        if (result.success) {
+          set({ modelJson: result.data, graphData: result.data });
+        }
+      } else {
+        const response = await fetch('/api/dummy-graph');
+        const data = await response.json();
+        set({ modelJson: data, graphData: data });
+      }
     } catch (error) {
       console.error('Failed to fetch graph data:', error);
     }
-  },
+  }
 }));
 
 export default useStore;

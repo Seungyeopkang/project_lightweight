@@ -1,244 +1,519 @@
-import React, { useEffect, useRef } from 'react';
-import useStore from '../store';
+import React, { useEffect, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import useStore from '../store';
+
 cytoscape.use(dagre);
 
-function GraphViewer() {
-  const { modelJson } = useStore();
-  const graphContainerRef = useRef(null);
+export default function GraphViewer() {
   const cyRef = useRef(null);
+  const containerRef = useRef(null);
+  const [viewMode, setViewMode] = useState('overview'); // 'overview' or 'detail'
+  const [selectedStageId, setSelectedStageId] = useState(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const modelJson = useStore((state) => state.modelJson);
+  const setSelectedNode = useStore((state) => state.setSelectedNode);
 
   useEffect(() => {
-    if (!modelJson || !graphContainerRef.current) return;
-    if (cyRef.current) cyRef.current.destroy();
+    console.log('[GraphViewer] Initializing, mode:', viewMode, 'stage:', selectedStageId);
+    
+    if (!containerRef.current || !modelJson) {
+      return;
+    }
 
-    // --- True Netron Style: Flat & Vertical ---
-    // 가독성을 위해 "Stage" 박스를 제거하고(Flatten), 모든 노드를 일렬로 배치합니다.
-    const flatNodes = modelJson.nodes.map(node => ({
-      data: { ...node.data, parent: undefined } // 부모(Stage) 종속성 제거
-    }));
-    const elements = [...flatNodes, ...modelJson.edges];
+    if (cyRef.current) {
+      cyRef.current.destroy();
+    }
 
-    const cy = cytoscape({
-      container: graphContainerRef.current,
-      elements: elements,
-      style: [
-        // --- Dark Theme Node Base ---
-        {
-          selector: 'node',
-          style: {
-            'shape': 'round-rectangle',
-            'background-color': '#404040', // Netron Default Gray
-            'border-width': 0,
-            'label': (n) => {
-               const data = n.data();
-               let label = data.label; // Op Type (e.g., Conv)
-               
-               // 속성 정보 추가 (W, B 등)
-               if(data.attributes) {
-                   if(data.attributes.W) label += `\nW (${data.attributes.W.join('x')})`;
-                   if(data.attributes.B) label += `\nB (${data.attributes.B.join('x')})`;
-                   if(data.attributes.kernel_shape) label += `\nks: ${data.attributes.kernel_shape.join('x')}`;
-                   if(data.attributes.strides) label += `\nstr: ${data.attributes.strides.join('x')}`;
-               }
-               return label;
-            },
-            'color': '#ececec', // Light Gray Text
-            'font-size': 10,
-            'font-family': 'Menlo, Consolas, monospace', // 코드 느낌 폰트
-            'font-weight': 'normal',
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'width': 'label',
-            'height': 'label',
-            'padding': '8px', // 패딩을 줄여서 타이트하게
-            'text-wrap': 'wrap',
-            'text-max-width': 120,
-            'text-justification': 'center',
-            'shadow-blur': 0,
-            'text-margin-y': 0
-          }
-        },
-        // --- Netron-Specific Operator Styling ---
-        {
-          selector: "node[type = 'Conv']",
-          style: { 
-            'background-color': '#3a5e8c', // Netron Blue
-            'border-color': '#283c5a',
-            'border-width': 1,
-            'shape': 'round-rectangle',
-            'color': '#ffffff',
-            'font-weight': 'bold',
-            'text-valign': 'center'
-          }
-        },
-        {
-          selector: "node[type = 'Gemm'], node[type = 'MatMul']", // Fully Connected
-          style: { 'background-color': '#3a5e8c', 'color': '#ffffff', 'font-weight': 'bold' } 
-        },
-        {
-          selector: "node[type = 'MaxPool'], node[type = 'AveragePool'], node[type = 'GlobalAveragePool']",
-          style: { 'background-color': '#386c48', 'color': '#e8f5e9' } // Netron Green
-        },
-        {
-          selector: "node[type = 'Relu'], node[type = 'LeakyRelu'], node[type = 'Sigmoid']",
-          style: { 
-             'background-color': '#8c3a3a', // Netron Red/Brown
-             'width': 60,
-             'height': 30,
-             'font-size': 9
-          }
-        },
-        {
-          selector: "node[type = 'Add'], node[type = 'Concat']",
-          style: { 'background-color': '#404040', 'border-width': 1, 'border-color': '#606060' } // Basic Gray
-        },
-        {
-           selector: "node[type = 'Input']",
-           style: { 
-             'background-color': '#e0e0e0', // Light Gray 
-             'color': '#333',
-             'font-weight': 'bold',
-             'border-radius': 4
-           }
-        },
-        {
-           selector: "node[type = 'Output']",
-           style: { 
-             'background-color': '#e0e0e0', 
-             'color': '#333',
-             'font-weight': 'bold'
-           }
-        },
-        {
-          selector: ':selected',
-          style: {
-            'border-color': '#d4d4d4', // White selection border
-            'border-width': 2,
-            'shadow-blur': 10,
-            'shadow-color': '#000'
-          }
-        },
-        // --- Edges ---
-        {
-          selector: 'edge',
-          style: {
-            'width': 1.5,
-            'line-color': '#707070',       // Darker Gray lines
-            'target-arrow-color': '#707070',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            'arrow-scale': 0.8
-          }
-        },
-        {
-           selector: 'edge:selected',
-           style: { 'line-color': '#ececec', 'target-arrow-color': '#ececec', 'width': 2.5 }
-        }
-      ],
-      layout: { name: 'preset' },
-      minZoom: 0.4, // 너무 작아지지 않게 제한
-      maxZoom: 2.0,
-      wheelSensitivity: 0.2, // 스크롤 속도 부드럽게
-      boxSelectionEnabled: false // 드래그 선택 비활성화 (팬 기능과 충돌 방지)
-    });
+    const { nodes, edges, stages, hierarchical } = modelJson;
 
-    cyRef.current = cy;
-
-    // --- Clean Vertical Layout ---
-    const runLayout = () => {
-      const layout = cy.layout({
-        name: 'dagre',
-        rankDir: 'TB',
-        align: 'UL',
-        ranker: 'tight-tree', 
-        nodeSep: 50,
-        rankSep: 60,
-        padding: 50,
-        animate: true,
-        animationDuration: 600,
-        fit: false // ★ 중요: 억지로 한 화면에 구겨넣지 않음 (깨알 글씨 방지)
-      });
-
-      layout.run();
-
-      layout.promiseOn('layoutstop').then(() => {
-          // 1. 줌 레벨을 적당히 고정 (1.0 = 100%)
-          cy.zoom(0.8);
-          
-          // 2. 맨 위(Input) 노드로 이동
-          const inputNode = cy.nodes()[0]; // 보통 첫 번째가 Input이거나 위쪽
-          if (inputNode) {
-              cy.center(inputNode);
-              // 살짝 아래로 내리기 (여백 확보)
-              cy.panBy({ x: 0, y: 100 });
-          } else {
-              cy.center();
-          }
-      });
-    };
-
-    runLayout();
-
-    // 더블클릭: 줌 리셋 (Fit)
-    cy.on('dblclick', (evt) => {
-         cy.animation({
-            fit: { eles: cy.elements(), padding: 50 },
-            duration: 500,
-            easing: 'ease-in-out-cubic'
-         }).play();
-    });
-
-    // 클릭: 속성 보기
-    cy.on('tap', 'node', evt => {
-        const node = evt.target;
-        const attrs = node.data('attributes');
-        
-        // 부모 노드(Stage)가 아닌 경우에만 선택
-        if (!node.isParent()) {
-            useStore.getState().setSelectedNode(node.data());
-            
-            // 선택된 노드 강조 효과 (선택 노드 외에는 투명도 조절 etc. - 여기선 간단히 테두리만)
-            cy.nodes().removeClass('selected');
-            node.addClass('selected');
-        }
-    });
+    try {
+      if (hierarchical && stages && viewMode === 'overview') {
+        createOverviewGraph(stages);
+      } else if (viewMode === 'detail' && selectedStageId) {
+        createStageDetailGraph(nodes, edges, stages, selectedStageId);
+      } else {
+        createDetailGraph(nodes, edges);
+      }
+    } catch (error) {
+      console.error('[GraphViewer] Error:', error);
+    }
 
     return () => {
       if (cyRef.current) cyRef.current.destroy();
     };
-  }, [modelJson]);
+  }, [modelJson, viewMode, selectedStageId, setSelectedNode]);
 
-  if (!modelJson) return null;
+  const createOverviewGraph = (stages) => {
+    const stageNodes = stages.map(stage => ({
+      data: {
+        id: stage.id,
+        label: stage.label,
+        childCount: stage.children.length
+      }
+    }));
+
+    const stageEdges = [];
+    for (let i = 0; i < stages.length - 1; i++) {
+      stageEdges.push({
+        data: {
+          id: `edge_${i}`,
+          source: stages[i].id,
+          target: stages[i + 1].id
+        }
+      });
+    }
+
+    console.log('[GraphViewer] Overview:', stageNodes.length, 'blocks');
+
+    cyRef.current = cytoscape({
+      container: containerRef.current,
+      elements: [...stageNodes, ...stageEdges],
+      
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': '#4a7ba7',
+            'label': 'data(label)',
+            'color': '#fff',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-size': '14px',
+            'font-weight': '700',
+            'font-family': '-apple-system, sans-serif',
+            'width': 220,  // Much larger!
+            'height': 110,  // Much larger!
+            'shape': 'roundrectangle',
+            'text-wrap': 'wrap',
+            'text-max-width': 205,
+            'border-width': 3,
+            'border-color': '#2d5a7b'
+          }
+        },
+        {
+          selector: 'edge',
+          style: {
+            'width': 4,
+            'line-color': '#666',
+            'target-arrow-color': '#666',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            'arrow-scale': 1.5
+          }
+        },
+        {
+          selector: 'node:selected',
+          style: {
+            'border-width': 5,
+            'border-color': '#ff0000',
+            'background-color': '#5a8bc7'
+          }
+        }
+      ],
+
+      layout: {
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 30,   // Reduced spacing!
+        rankSep: 70,   // Reduced spacing!
+        padding: 50
+      },
+
+      minZoom: 0.1,
+      maxZoom: 5,
+      wheelSensitivity: 0.2
+    });
+
+    cyRef.current.on('zoom', () => {
+      setZoomLevel(cyRef.current.zoom());
+    });
+
+    cyRef.current.on('tap', 'node', (evt) => {
+      const node = evt.target;
+      const stageId = node.data('id');
+      console.log('[GraphViewer] Block clicked:', stageId);
+      setSelectedStageId(stageId);
+      setViewMode('detail');
+    });
+
+    setTimeout(() => {
+      if (cyRef.current) {
+        cyRef.current.fit(60);
+        setZoomLevel(cyRef.current.zoom());
+      }
+    }, 200);
+  };
+
+  const createStageDetailGraph = (nodes, edges, stages, stageId) => {
+    // Find the selected stage
+    const stage = stages.find(s => s.id === stageId);
+    if (!stage) {
+      console.error('[GraphViewer] Stage not found:', stageId);
+      return;
+    }
+
+    // Filter nodes to only those in this stage
+    const stageNodeIds = new Set(stage.children);
+    const stageNodes = nodes.filter(node => {
+      const nodeId = node.data?.id || node.id;
+      return stageNodeIds.has(nodeId);
+    });
+
+    // Filter edges to only those within this stage
+    const stageEdges = edges.filter(edge => {
+      const src = edge.data?.source || edge.source;
+      const tgt = edge.data?.target || edge.target;
+      return stageNodeIds.has(src) && stageNodeIds.has(tgt);
+    });
+
+    console.log('[GraphViewer] Stage Detail:', stage.label);
+    console.log('  Nodes:', stageNodes.length, '/', nodes.length);
+    console.log('  Edges:', stageEdges.length);
+
+    const cyNodes = stageNodes.map(node => ({
+      data: {
+        id: node.data?.id || node.id,
+        label: node.data?.label || node.data?.type || 'Node',
+        type: node.data?.type || 'Unknown'
+      }
+    }));
+
+    const cyEdges = stageEdges.map((edge, idx) => ({
+      data: {
+        id: edge.data?.id || edge.id || `e${idx}`,
+        source: edge.data?.source || edge.source,
+        target: edge.data?.target || edge.target
+      }
+    }));
+
+    cyRef.current = cytoscape({
+      container: containerRef.current,
+      elements: [...cyNodes, ...cyEdges],
+      
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': (ele) => {
+              const type = ele.data('type') || '';
+              if (type.includes('Conv')) return '#4a7ba7';
+              if (type.includes('Relu')) return '#9d4e40';
+              if (type.includes('Pool')) return '#4a7a4a';
+              if (type.includes('Norm')) return '#4a7a65';
+              if (type.includes('Gemm') || type.includes('MatMul')) return '#7a4a9d';
+              return '#777';
+            },
+            'label': 'data(label)',
+            'color': '#fff',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-size': '11px',
+            'font-weight': '600',
+            'font-family': '-apple-system, sans-serif',
+            'width': 80,  // Larger for detail view
+            'height': 50,  // Larger for detail view
+            'shape': 'roundrectangle',
+            'text-wrap': 'wrap',
+            'text-max-width': 75,
+            'border-width': 2,
+            'border-color': '#000'
+          }
+        },
+        {
+          selector: 'edge',
+          style: {
+            'width': 2,
+            'line-color': '#999',
+            'target-arrow-color': '#999',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            'arrow-scale': 1
+          }
+        },
+        {
+          selector: 'node:selected',
+          style: {
+            'border-width': 4,
+            'border-color': '#ff0000'
+          }
+        }
+      ],
+
+      layout: {
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 40,
+        rankSep: 60,
+        padding: 50
+      },
+
+      minZoom: 0.1,
+      maxZoom: 10,
+      wheelSensitivity: 0.2
+    });
+
+    cyRef.current.on('zoom', () => {
+      setZoomLevel(cyRef.current.zoom());
+    });
+
+    cyRef.current.on('tap', 'node', (evt) => {
+      const node = evt.target;
+      setSelectedNode({
+        id: node.data('id'),
+        type: node.data('type'),
+        label: node.data('label')
+      });
+    });
+
+    setTimeout(() => {
+      if (cyRef.current) {
+        cyRef.current.fit(80);  // More padding for better view
+        setZoomLevel(cyRef.current.zoom());
+      }
+    }, 200);
+  };
+
+  const createDetailGraph = (nodes, edges) => {
+    // Full detail view (all nodes) - fallback
+    const cyNodes = nodes.map(node => ({
+      data: {
+        id: node.data?.id || node.id,
+        label: node.data?.label || node.data?.type || 'Node',
+        type: node.data?.type || 'Unknown'
+      }
+    }));
+
+    const cyEdges = edges.map((edge, idx) => ({
+      data: {
+        id: edge.data?.id || edge.id || `e${idx}`,
+        source: edge.data?.source || edge.source,
+        target: edge.data?.target || edge.target
+      }
+    }));
+
+    cyRef.current = cytoscape({
+      container: containerRef.current,
+      elements: [...cyNodes, ...cyEdges],
+      
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': (ele) => {
+              const type = ele.data('type') || '';
+              if (type.includes('Conv')) return '#4a7ba7';
+              if (type.includes('Relu')) return '#9d4e40';
+              if (type.includes('Pool')) return '#4a7a4a';
+              if (type.includes('Norm')) return '#4a7a65';
+              if (type.includes('Gemm') || type.includes('MatMul')) return '#7a4a9d';
+              return '#777';
+            },
+            'label': 'data(label)',
+            'color': '#fff',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-size': '8px',
+            'font-weight': '500',
+            'font-family': '-apple-system, sans-serif',
+            'width': 50,
+            'height': 30,
+            'shape': 'roundrectangle',
+            'text-wrap': 'ellipsis',
+            'text-max-width': 46,
+            'border-width': 1,
+            'border-color': '#000'
+          }
+        },
+        {
+          selector: 'edge',
+          style: {
+            'width': 1.5,
+            'line-color': '#999',
+            'target-arrow-color': '#999',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            'arrow-scale': 0.7
+          }
+        },
+        {
+          selector: 'node:selected',
+          style: {
+            'border-width': 3,
+            'border-color': '#ff0000'
+          }
+        }
+      ],
+
+      layout: {
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 30,
+        rankSep: 50,
+        padding: 40
+      },
+
+      minZoom: 0.01,
+      maxZoom: 10,
+      wheelSensitivity: 0.2
+    });
+
+    cyRef.current.on('zoom', () => {
+      setZoomLevel(cyRef.current.zoom());
+    });
+
+    cyRef.current.on('tap', 'node', (evt) => {
+      const node = evt.target;
+      setSelectedNode({
+        id: node.data('id'),
+        type: node.data('type'),
+        label: node.data('label')
+      });
+    });
+
+    setTimeout(() => {
+      if (cyRef.current) {
+        cyRef.current.fit(50);
+        setZoomLevel(cyRef.current.zoom());
+      }
+    }, 200);
+  };
+
+  const handleZoomIn = () => {
+    if (cyRef.current) {
+      cyRef.current.zoom(cyRef.current.zoom() * 1.5);
+      cyRef.current.center();
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (cyRef.current) {
+      cyRef.current.zoom(cyRef.current.zoom() * 0.67);
+      cyRef.current.center();
+    }
+  };
+
+  const handleFit = () => {
+    if (cyRef.current) {
+      cyRef.current.fit(60);
+    }
+  };
+
+  const backToOverview = () => {
+    setViewMode('overview');
+    setSelectedStageId(null);
+  };
+
+  // Get current stage info
+  const currentStage = selectedStageId && modelJson?.stages 
+    ? modelJson.stages.find(s => s.id === selectedStageId)
+    : null;
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <div
-        ref={graphContainerRef}
-        style={{ width: '100%', height: '100%', backgroundColor: '#2d2d2d' }}
-      />
-
-      {/* 힌트 메시지 업데이트 */}
-      <div
-        style={{
+    <div style={{ position: 'relative', width: '100%', height: '100%', background: '#FAFAFA' }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      
+      {/* Info */}
+      {modelJson && (
+        <div style={{
           position: 'absolute',
-          bottom: 20,
-          left: 20,
-          backgroundColor: 'rgba(0,0,0,0.7)',
-          color: '#e2e8f0',
-          padding: '10px 16px',
-          borderRadius: 8,
-          fontSize: 14,
-          pointerEvents: 'none',
-          boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
-        }}
-      >
-        🖱️ <b>Double Click</b>: 펼치기/접기/확대 <br/>
-        🖱️ <b>Click</b>: 속성 보기 (좌측 패널)
+          top: '16px',
+          left: '16px',
+          background: 'rgba(255,255,255,0.96)',
+          padding: '12px 16px',
+          borderRadius: '8px',
+          fontSize: '11px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          border: '1px solid #e0e0e0',
+          lineHeight: '1.6',
+          fontFamily: 'monospace'
+        }}>
+          <div style={{ fontWeight: '600', color: '#333', marginBottom: '6px' }}>
+            {viewMode === 'overview' ? '🌍 Overview' : `🔍 ${currentStage?.label || 'Detail'}`}
+          </div>
+          <div>Zoom: {zoomLevel.toFixed(2)}x</div>
+          {viewMode === 'overview' && modelJson.stages && (
+            <div>Blocks: {modelJson.stages.length}</div>
+          )}
+          {viewMode === 'detail' && currentStage && (
+            <div>Nodes: {currentStage.children.length}</div>
+          )}
+        </div>
+      )}
+      
+      {/* Controls */}
+      <div style={{
+        position: 'absolute',
+        bottom: '20px',
+        right: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px'
+      }}>
+        {viewMode === 'detail' && (
+          <button
+            onClick={backToOverview}
+            style={{
+              padding: '12px 20px',
+              background: '#4a7ba7',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              boxShadow: '0 3px 10px rgba(0,0,0,0.15)'
+            }}
+          >
+            ← Back to Overview
+          </button>
+        )}
+        <button onClick={handleZoomIn} style={btnStyle}>+</button>
+        <button onClick={handleZoomOut} style={btnStyle}>−</button>
+        <button onClick={handleFit} style={btnStyle}>⊡</button>
+      </div>
+
+      {/* Guide */}
+      <div style={{
+        position: 'absolute',
+        bottom: '20px',
+        left: '20px',
+        background: 'rgba(79, 70, 229, 0.95)',
+        color: '#fff',
+        padding: '12px 16px',
+        borderRadius: '8px',
+        fontSize: '11px',
+        maxWidth: '260px',
+        lineHeight: '1.6',
+        boxShadow: '0 4px 12px rgba(79, 70, 229, 0.3)'
+      }}>
+        <div style={{ fontWeight: '600', marginBottom: '6px' }}>💡 사용법</div>
+        {viewMode === 'overview' ? (
+          <>
+            <div>• 블록 클릭: 해당 블록 상세보기</div>
+            <div>• 12개 블록, 각 10개 레이어</div>
+          </>
+        ) : (
+          <>
+            <div>• 노드 클릭: 상세 정보</div>
+            <div>• Back 버튼: Overview로 복귀</div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-export default GraphViewer;
+const btnStyle = {
+  width: '44px',
+  height: '44px',
+  background: 'rgba(255,255,255,0.98)',
+  border: '1px solid #ccc',
+  borderRadius: '10px',
+  fontSize: '22px',
+  fontWeight: 'bold',
+  cursor: 'pointer',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+  transition: 'all 0.2s',
+  color: '#333'
+};

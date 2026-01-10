@@ -1,0 +1,58 @@
+{
+    "name": "onnx-optimizer-desktop",
+    "version": "0.1.0",
+    "description": "ONNX Model Optimization Desktop Application",
+    "main": "electron/main.js",
+    "type": "module",
+    "scripts": {
+        "dev": "concurrently -k -n \"vite,electron\" -c \"cyan,green\" \"npm run dev:vite\" \"npm run dev:electron\"",
+        "dev:vite": "cd frontend && npx vite",
+        "dev:electron": "wait-on http://localhost:5173 && electron .",
+        "build": "cd frontend && npx vite build",
+        "dist": "npm run build && electron-builder",
+        "dist:linux": "npm run build && electron-builder --linux",
+        "dist:win": "npm run build && electron-builder --win"
+    },
+    "build": {
+        "appId": "com.onnx.optimizer",
+        "productName": "ONNX Optimizer",
+        "directories": {
+            "output": "dist"
+        },
+        "files": [
+            "electron/**/*",
+            "frontend/dist/**/*",
+            "backend/**/*",
+            "!backend/__pycache__",
+            "!backend/.gitkeep"
+        ],
+        "extraResources": [
+            {
+                "from": "backend",
+                "to": "backend"
+            }
+        ],
+        "linux": {
+            "target": [
+                "AppImage"
+            ],
+            "category": "Development"
+        },
+        "win": {
+            "target": [
+                "nsis"
+            ],
+            "icon": "build/icon.ico"
+        }
+    },
+    "devDependencies": {
+        "concurrently": "^9.1.2",
+        "electron": "^33.4.3",
+        "electron-builder": "^24.13.3",
+        "wait-on": "^8.0.1"
+    },
+    "dependencies": {
+        "electron-log": "^5.4.3",
+        "python-shell": "^5.0.0"
+    }
+}

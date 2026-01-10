@@ -25,3 +25,42 @@ dev.sh
 # Temporary Artifacts for Quantization
 temp_*.onnx
 quantized_*.onnx
+
+# Netron reference (external)
+netron_reference/
+
+# Artifact files (session notes, planning docs)
+.gemini/
+brain/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# Documentation & Manual files (internal dev docs)
+TODO.md
+TESTING.md
+QUICKSTART_MANUAL.md
+*.manual.md
+desktop_app_master_plan.md
+.sync_info.md
+.cursorrules
+
+# Test scripts
+test_*.sh
+
+# Build outputs (CRITICAL - 4GB+)
+dist/
+build/
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.exe
+release/
+out/

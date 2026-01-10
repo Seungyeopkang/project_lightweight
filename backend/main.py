@@ -1,278 +1,195 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
-
-from fastapi.middleware.cors import CORSMiddleware # 1. CORSMiddleware 임포트
-import torch
-import torch.fx as fx
-import io
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import onnx
-from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnx import numpy_helper
+import numpy as np
 import os
+import uuid
+import time
+from typing import Dict, Optional, List, Tuple
+import onnxruntime as ort
+import logging
 
+from pruning import (
+    prune_by_magnitude,
+    prune_structured,
+    prune_gradient_based,
+    prune_pattern_based
+)
+# quantization and benchmark imports removed - not yet implemented
+from graph_parser import parse_onnx_graph_hierarchical
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# Session storage
+sessions: Dict[str, Dict] = {}
 
-# FastAPI 앱 인스턴스 생성
 app = FastAPI()
 
-# 2. 허용할 출처 목록 정의
-# 지금은 리액트 개발 서버 주소만 추가합니다.
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173", # Vite 개발 서버의 IP 주소 직접 접속 허용
-]
-
-# 3. CORS 미들웨어 추가
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # origins에 지정된 출처의 요청만 허용
-    allow_credentials=True, # 쿠키 등 자격 증명 허용 여부
-    allow_methods=["*"],    # 모든 HTTP 메소드 허용 (GET, POST 등)
-    allow_headers=["*"],    # 모든 HTTP 헤더 허용
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 루트 경로 ("/")로 GET 요청이 올 때 실행될 함수 정의
+def get_session_model(session_id: str) -> str:
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return sessions[session_id]["model_path"]
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello World"}
+    return {"message": "ONNX Optimizer API"}
 
-
-# --- 여기에 새로운 API 두 개를 추가합니다 ---
-
-# 1. 헬스 체크 API
 @app.get("/api/health")
 def health_check():
-    """서버가 정상적으로 작동하는지 확인하는 API"""
     return {"status": "ok"}
-
-# 2. 가짜 그래프 데이터 API
-@app.get("/api/dummy-graph")
-def get_dummy_graph():
-    """프론트엔드 그래프 시각화 테스트를 위한 가짜 데이터"""
-    dummy_graph_data = {
-        "nodes": [
-            {"data": {"id": "input_layer", "label": "Input"}},
-            {"data": {"id": "conv1", "label": "Conv2d"}},
-            {"data": {"id": "relu1", "label": "ReLU"}},
-            {"data": {"id": "output_layer", "label": "Linear"}},
-        ],
-        "edges": [
-            {"data": {"id": "e1", "source": "input_layer", "target": "conv1"}},
-            {"data": {"id": "e2", "source": "conv1", "target": "relu1"}},
-            {"data": {"id": "e3", "source": "relu1", "target": "output_layer"}},
-        ]
-    }
-    return dummy_graph_data
 
 @app.post("/api/upload-model")
 async def upload_model(model_file: UploadFile = File(...)):
-    """ .onnx 모델 파일을 업로드받아 '해상도 기반 계층 구조'로 분석하고 JSON으로 반환합니다. """
-
-    if not model_file.filename.endswith('.onnx'):
-        raise HTTPException(status_code=400, detail="잘못된 파일 형식입니다. .onnx 파일을 업로드해주세요.")
-
+    """Upload ONNX model and return hierarchical graph structure"""
     try:
+        if not model_file.filename.endswith('.onnx'):
+            raise HTTPException(status_code=400, detail="Only .onnx files are supported")
+        
+        # Generate session ID
+        session_id = str(uuid.uuid4())
+        temp_path = f"/tmp/{session_id}_{model_file.filename}"
+        
+        # Save file
         contents = await model_file.read()
-        onnx_model = onnx.load_from_string(contents)
-        graph = onnx_model.graph
-
-        nodes = []
-        edges = []
-        
-        # --- 1단계: 해상도(Stage) 경계 식별 ---
-        
-        # { 'node_output_name': 'stage_id' }
-        node_to_stage_map = {}
-        # { 'node_output_name': 'node_op_type' }
-        node_type_map = {}
-        # 해상도를 변경하는 경계 연산자들
-        BOUNDARY_OPS = {'MaxPool', 'AveragePool', 'Upsample', 'Resize'}
-        
-        stage_count = 0
-        current_stage_id = f"Stage_{stage_count}"
-        
-        initializer_names = {init.name for init in graph.initializer}
-        initializer_map = {init.name: init for init in graph.initializer} # Shape 조회를 위한 맵
-        
-        # 1-1. Input 노드 -> Stage_0 (Input)
-        current_stage_id = "Stage_Input"
-        nodes.append({'data': {'id': current_stage_id, 'label': 'Input', 'type': 'Input'}})
-        for input_node in graph.input:
-            if input_node.name not in initializer_names:
-                node_to_stage_map[input_node.name] = current_stage_id
-                node_type_map[input_node.name] = 'Input'
-
-        stage_count += 1
-        current_stage_id = f"Stage_{stage_count}" # Stage_1 부터 시작
-
-        # 1-2. 그래프 노드 순회하며 Stage 할당
-        parent_nodes_created = {"Stage_Input"}
-
-        for node in graph.node:
-            node_id = node.output[0]
-            
-            # 이 노드가 경계 연산자인지 확인
-            is_boundary = False
-            if node.op_type in BOUNDARY_OPS:
-                is_boundary = True
-            elif node.op_type == 'Conv':
-                # 'strides' 속성을 확인
-                for attr in node.attribute:
-                    if attr.name == 'strides' and any(s > 1 for s in attr.ints):
-                        is_boundary = True
-                        break
-            
-            # 현재 노드에 스테이지 할당
-            # 경계 노드 자신은 '이전' 스테이지의 마지막 노드로 간주합니다.
-            if current_stage_id not in parent_nodes_created:
-                nodes.append({'data': {'id': current_stage_id, 'label': current_stage_id, 'type': 'Stage'}})
-                parent_nodes_created.add(current_stage_id)
-            
-            node_to_stage_map[node_id] = current_stage_id
-            node_type_map[node_id] = node.op_type
-            
-            # 속성 추출 (커널 크기, 스트라이드 등)
-            attributes = {}
-            for attr in node.attribute:
-                if attr.type == 1: # FLOAT
-                    attributes[attr.name] = attr.f
-                elif attr.type == 2: # INT
-                    attributes[attr.name] = attr.i
-                elif attr.type == 3: # STRING
-                    attributes[attr.name] = attr.s.decode('utf-8')
-                elif attr.type == 6: # FLOATS
-                    attributes[attr.name] = list(attr.floats)
-                elif attr.type == 7: # INTS
-                    attributes[attr.name] = list(attr.ints)
-                elif attr.type == 8: # STRINGS
-                    attributes[attr.name] = [s.decode('utf-8') for s in attr.strings]
-
-            # [New] Initializer(가중치/바이어스) 형상 추출
-            # 노드의 input 중 initializer에 있는 것이 있다면 그 shape를 기록
-            input_shapes = {}
-            for input_name in node.input:
-                if input_name in initializer_map:
-                    tensor = initializer_map[input_name]
-                    # 일반적으로 첫번째 input은 데이터, 두번째는 가중치(W), 세번째는 바이어스(B)
-                    # 이름에 'weight'나 'bias'가 포함되어 있으면 더 명확하지만, 
-                    # 순서나 initializer 존재 여부로 판단하는 것이 일반적
-                    dims = list(tensor.dims)
-                    
-                    # 간단한 매핑: 보통 W는 rank 4 (Conv) or rank 2 (Gemm)
-                    label_key = 'param'
-                    if len(dims) == 4: label_key = 'W' 
-                    elif len(dims) == 1: label_key = 'B'
-                    elif 'weight' in input_name: label_key = 'W'
-                    elif 'bias' in input_name: label_key = 'B'
-                    
-                    attributes[label_key] = dims
-
-            # 자식 노드도 생성 (부모 지정 + 속성 추가)
-            nodes.append({
-                'data': {
-                    'id': node_id, 
-                    'label': node.op_type, 
-                    'type': node.op_type, 
-                    'parent': current_stage_id,
-                    'attributes': attributes # 속성 정보 전달
-                }
-            })
-            
-            # 경계 노드였다면, 다음 노드를 위해 새 스테이지로 이동
-            if is_boundary:
-                stage_count += 1
-                current_stage_id = f"Stage_{stage_count}"
-
-        # 1-3. Output 노드 -> Stage_Output
-        output_stage_id = "Stage_Output"
-        nodes.append({'data': {'id': output_stage_id, 'label': 'Output', 'type': 'Output'}})
-        for output_node in graph.output:
-            node_to_stage_map[output_node.name] = output_stage_id
-            node_type_map[output_node.name] = 'Output'
-
-
-        # --- 2단계: 엣지 생성 (부모 간 / 자식 간) ---
-        parent_edges = set() # 부모 간 중복 엣지 방지
-
-        for node in graph.node:
-            target_node_id = node.output[0]
-            if target_node_id not in node_to_stage_map: continue
-            
-            target_parent = node_to_stage_map[target_node_id]
-
-            for input_name in node.input:
-                if input_name in initializer_names or input_name not in node_to_stage_map:
-                    continue
-                
-                source_node_id = input_name
-                source_parent = node_to_stage_map[source_node_id]
-
-                if source_parent == target_parent:
-                    # [자식 간 엣지] (같은 Stage 내부 연결)
-                    edges.append({'data': {'source': source_node_id, 'target': target_node_id}})
-                else:
-                    # [부모 간 엣지] (다른 Stage 간 연결)
-                    edge_tuple = (source_parent, target_parent)
-                    if edge_tuple not in parent_edges:
-                        edges.append({'data': {'source': source_parent, 'target': target_parent}})
-                        parent_edges.add(edge_tuple)
-        
-        # 마지막으로, Output 노드와 연결되는 부모 엣지 추가
-        for output_node in graph.output:
-            for node in graph.node:
-                if output_node.name in node.output:
-                    source_parent = node_to_stage_map[node.output[0]]
-                    target_parent = output_stage_id
-                    
-                    edge_tuple = (source_parent, target_parent)
-                    if edge_tuple not in parent_edges:
-                        edges.append({'data': {'source': source_parent, 'target': target_parent}})
-                        parent_edges.add(edge_tuple)
-
-        return {"nodes": nodes, "edges": edges}
-
-    except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"ONNX 모델 분석 중 오류 발생: {e}")
-
-@app.post("/api/quantize")
-async def quantize_model(model_file: UploadFile = File(...)):
-    """ .onnx 파일을 받아 Dynamic Quantization(INT8)을 적용하고 파일을 반환합니다. """
-    
-    if not model_file.filename.endswith('.onnx'):
-        raise HTTPException(status_code=400, detail="잘못된 파일 형식입니다. .onnx 파일을 업로드해주세요.")
-
-    temp_input_path = f"temp_{model_file.filename}"
-    temp_output_path = f"quantized_{model_file.filename}"
-
-    try:
-        # 1. 업로드된 파일 저장
-        contents = await model_file.read()
-        with open(temp_input_path, "wb") as f:
+        with open(temp_path, 'wb') as f:
             f.write(contents)
+        
+        # Store session
+        sessions[session_id] = {
+            "model_path": temp_path,
+            "created_at": time.time()
+        }
+        
+        # Parse with hierarchical structure
+        model = onnx.load(temp_path)
+        graph_data = parse_onnx_graph_hierarchical(model)
+        
+        # Add session_id to response
+        graph_data['session_id'] = session_id
+        
+        logger.info(f"Model uploaded: {len(graph_data['nodes'])} nodes, {len(graph_data['stages'])} stages")
+        
+        return graph_data
+        
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # 2. 양자화 수행 (Float32 -> Int8)
-        # optimize_model=False로 두어 순수 양자화만 수행 (그래프 최적화는 별도 단계)
+@app.post("/api/prune-model")
+async def prune_model(
+    session_id: str = Form(...),
+    method: str = Form("magnitude"),
+    ratio: float = Form(0.3)
+):
+    """Prune with multiple methods"""
+    try:
+        model_path = get_session_model(session_id)
+        model = onnx.load(model_path)
+        
+        if method == "magnitude":
+            pruned, stats = prune_by_magnitude(model, ratio)
+        elif method == "structured":
+            pruned, stats = prune_structured(model, ratio)
+        elif method == "gradient":
+            pruned, stats = prune_gradient_based(model, ratio)
+        elif method == "pattern":
+            pruned, stats = prune_pattern_based(model, ratio)
+        else:
+            raise HTTPException(400, f"Unknown method: {method}")
+        
+        if not stats.get('success'):
+            raise HTTPException(500, stats.get('error', 'Pruning failed'))
+        
+        output_path = f"/tmp/pruned_{session_id}.onnx"
+        onnx.save(pruned, output_path)
+        
+        return FileResponse(
+            output_path,
+            media_type="application/octet-stream",
+            filename=f"model_pruned_{method}.onnx"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/api/quantize-model")
+async def quantize_model(session_id: str = Form(...)):
+    """Quantize to INT8"""
+    try:
+        model_path = get_session_model(session_id)
+        output_path = f"/tmp/quantized_{session_id}.onnx"
+        
         quantize_dynamic(
-            temp_input_path,
-            temp_output_path,
+            model_path,
+            output_path,
             weight_type=QuantType.QUInt8
         )
-
-        # 3. 결과 파일 반환
+        
         return FileResponse(
-            path=temp_output_path,
-            filename=temp_output_path,
-            media_type='application/octet-stream'
+            output_path,
+            media_type="application/octet-stream",
+            filename="model_quantized.onnx"
         )
-
     except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"양자화 중 오류 발생: {e}")
-    finally:
-        # 정리: 입력 파일 삭제 (출력 파일은 전송 후 FastAPI가 알아서 처리하지 않으므로, 
-        # BackgroundTask를 써야하지만 일단 간단히 처리. 실제로는 주기적 삭제 필요)
-        if os.path.exists(temp_input_path):
-            os.remove(temp_input_path)
+        raise HTTPException(500, str(e))
+
+@app.post("/api/benchmark")
+async def benchmark_model(session_id: str = Form(...)):
+    """Real benchmark with inference timing"""
+    try:
+        model_path = get_session_model(session_id)
+        
+        session = ort.InferenceSession(model_path)
+        input_info = session.get_inputs()[0]
+        shape = input_info.shape
+        
+        # Generate dummy input
+        dummy_shape = [s if isinstance(s, int) else 1 for s in shape]
+        dummy_input = np.random.randn(*dummy_shape).astype(np.float32)
+        
+        # Warmup
+        for _ in range(10):
+            session.run(None, {input_info.name: dummy_input})
+        
+        # Measure
+        times = []
+        for _ in range(100):
+            start = time.time()
+            session.run(None, {input_info.name: dummy_input})
+            times.append(time.time() - start)
+        
+        avg_time_ms = np.mean(times) * 1000
+        model_size_mb = os.path.getsize(model_path) / (1024 ** 2)
+        
+        model = onnx.load(model_path)
+        total_params = count_parameters(model)
+        
+        # Estimate FLOPs (simplified)
+        flops = total_params * 2  # Rough estimate
+        
+        return {
+            "inference_ms": round(avg_time_ms, 2),
+            "memory_mb": round(model_size_mb, 2),
+            "flops": f"{flops / 1e9:.2f} GFLOPs",
+            "model_size_mb": round(model_size_mb, 2),
+            "total_params": total_params
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
