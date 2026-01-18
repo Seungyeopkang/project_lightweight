@@ -50,6 +50,10 @@ QUICKSTART_MANUAL.md
 desktop_app_master_plan.md
 .sync_info.md
 .cursorrules
+.agent/
+.gemini/
+PROJECT_PLAN.md
+
 
 # Test scripts
 test_*.sh
