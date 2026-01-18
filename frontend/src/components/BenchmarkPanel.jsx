@@ -1,248 +1,122 @@
 import React, { useState } from 'react';
 import useStore from '../store';
-import axios from 'axios';
+import CollapsiblePanel from './common/CollapsiblePanel';
 import { toast } from 'react-toastify';
 
-export default function BenchmarkPanel() {
-  const [benchmarking, setBenchmarking] = useState(false);
-  const currentModel = useStore((state) => state.currentModel);
-  const sessionId = useStore((state) => state.sessionId);
-  const [metrics, setMetrics] = useState(null);
+const BenchmarkPanel = () => {
+  const { currentModel } = useStore();
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [dataset, setDataset] = useState('cifar10');
 
-  const handleBenchmark = async () => {
-    if (!currentModel) {
-      toast.warning('Please upload a model first');
-      return;
-    }
+  const handleRunBenchmark = async () => {
+    if (!currentModel) return;
 
-    if (!sessionId) {
-      toast.error('Session expired. Please re-upload model');
-      return;
-    }
-
-    setBenchmarking(true);
-    
+    setLoading(true);
+    setResult(null);
     try {
-      const formData = new FormData();
-      formData.append('session_id', sessionId);
-
-      const response = await axios.post('http://localhost:8000/api/benchmark', formData);
-      setMetrics(response.data);
-      toast.success('✓ Benchmark completed successfully!');
-    } catch (error) {
-      console.error('Benchmark error:', error);
-      toast.error(`Benchmark failed: ${error.message}`);
+      const data = await window.electronAPI.runBenchmark(currentModel.path, dataset);
+      if (data.error) {
+        toast.error(`Benchmark Failed: ${data.error}`);
+      } else {
+        setResult(data);
+        toast.success("Benchmark Completed!");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Benchmark Error");
     } finally {
-      setBenchmarking(false);
+      setLoading(false);
+    }
+  };
+
+  const styles = {
+    container: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '12px'
+    },
+    select: {
+      width: '100%',
+      padding: '8px',
+      borderRadius: '4px',
+      border: '1px solid #ddd',
+      fontSize: '13px'
+    },
+    button: {
+      padding: '10px',
+      backgroundColor: '#10b981', // Emerald 500
+      color: 'white',
+      border: 'none',
+      borderRadius: '6px',
+      cursor: 'pointer',
+      fontSize: '13px',
+      fontWeight: '600',
+      transition: 'background 0.2s'
+    },
+    resultBox: {
+      marginTop: '10px',
+      padding: '10px',
+      backgroundColor: '#f8fafc', // Slate 50
+      borderRadius: '6px',
+      border: '1px solid #e2e8f0',
+      fontSize: '13px'
+    },
+    metricRow: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      marginBottom: '6px',
+      borderBottom: '1px dashed #cbd5e1',
+      paddingBottom: '4px'
     }
   };
 
   return (
-    <div style={styles.panel}>
-      <div style={styles.header}>
-        <div style={styles.headerIcon}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-          </svg>
-        </div>
-        <h3 style={styles.title}>Performance Benchmark</h3>
-      </div>
-      
-      {!currentModel ? (
-        <div style={styles.emptyState}>
-          <div style={styles.emptyIcon}>⚡</div>
-          <div style={styles.emptyText}>Upload a model to measure performance</div>
-        </div>
-      ) : (
-        <>
-          <div style={styles.description}>
-            Measure inference speed, memory usage, and computational complexity
-          </div>
-
-          <button
-            onClick={handleBenchmark}
-            disabled={benchmarking}
-            style={{
-              ...styles.button,
-              ...(benchmarking ? styles.buttonDisabled : {}),
-            }}
+    <CollapsiblePanel title="Local Benchmark" icon="🚀">
+      <div style={styles.container}>
+        <div>
+          <label style={{ display: 'block', fontSize: '11px', color: '#666', marginBottom: '4px' }}>Dataset</label>
+          <select
+            style={styles.select}
+            value={dataset}
+            onChange={(e) => setDataset(e.target.value)}
           >
-            {benchmarking ? (
-              <>
-                <span className="spinner" style={styles.spinner}></span>
-                Running benchmark...
-              </>
-            ) : (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '8px' }}>
-                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                </svg>
-                Run Benchmark
-              </>
-            )}
-          </button>
+            <option value="cifar10">CIFAR-10 (Test Set)</option>
+            {/* <option value="cifar100" disabled>CIFAR-100 (Implementation Pending)</option> */}
+          </select>
+        </div>
 
-          {metrics && (
-            <div style={styles.metrics}>
-              <div style={styles.metricsHeader}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
-                  <polyline points="17 6 23 6 23 12"></polyline>
-                </svg>
-                <span>Results</span>
-              </div>
-              
-              <div style={styles.metricCard}>
-                <div style={styles.metricIcon}>⚡</div>
-                <div style={styles.metricContent}>
-                  <div style={styles.metricLabel}>Inference Speed</div>
-                  <div style={styles.metricValue}>{metrics.inference_ms} ms</div>
-                </div>
-              </div>
+        <button
+          style={{
+            ...styles.button,
+            backgroundColor: loading ? '#6ee7b7' : '#10b981',
+            cursor: loading ? 'wait' : 'pointer'
+          }}
+          onClick={handleRunBenchmark}
+          disabled={loading}
+        >
+          {loading ? 'Running Benchmark...' : 'Run Benchmark'}
+        </button>
 
-              <div style={styles.metricCard}>
-                <div style={styles.metricIcon}>💾</div>
-                <div style={styles.metricContent}>
-                  <div style={styles.metricLabel}>Model Size</div>
-                  <div style={styles.metricValue}>{metrics.model_size_mb} MB</div>
-                </div>
-              </div>
-
-              <div style={styles.metricCard}>
-                <div style={styles.metricIcon}>🔢</div>
-                <div style={styles.metricContent}>
-                  <div style={styles.metricLabel}>Parameters</div>
-                  <div style={styles.metricValue}>{metrics.total_params?.toLocaleString()}</div>
-                </div>
-              </div>
-
-              <div style={styles.metricCard}>
-                <div style={styles.metricIcon}>⚙️</div>
-                <div style={styles.metricContent}>
-                  <div style={styles.metricLabel}>FLOPs</div>
-                  <div style={styles.metricValue}>{metrics.flops}</div>
-                </div>
-              </div>
+        {result && (
+          <div style={styles.resultBox}>
+            <div style={styles.metricRow}>
+              <span style={{ color: '#64748b' }}>Accuracy</span>
+              <span style={{ color: '#0f172a', fontWeight: 'bold' }}>{result.accuracy.toFixed(2)}%</span>
             </div>
-          )}
-        </>
-      )}
-    </div>
+            <div style={styles.metricRow}>
+              <span style={{ color: '#64748b' }}>Latency (Avg)</span>
+              <span style={{ color: '#0f172a', fontWeight: 'bold' }}>{result.latency_ms.toFixed(2)} ms</span>
+            </div>
+            <div style={styles.metricRow}>
+              <span style={{ color: '#64748b' }}>Samples</span>
+              <span>{result.samples}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </CollapsiblePanel>
   );
-}
-
-const styles = {
-  panel: {
-    margin: '12px',
-    backgroundColor: '#ffffff',
-    borderRadius: '12px',
-    border: '1px solid #e0e0e0',
-    overflow: 'hidden',
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '16px',
-    borderBottom: '1px solid #f0f0f0',
-  },
-  headerIcon: {
-    color: '#8b5cf6',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  title: {
-    margin: 0,
-    fontSize: '15px',
-    fontWeight: '600',
-    color: '#242424',
-  },
-  description: {
-    padding: '16px',
-    fontSize: '12px',
-    color: '#666',
-    lineHeight: '1.5',
-    borderBottom: '1px solid #f5f5f5',
-  },
-  button: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 'calc(100% - 32px)',
-    margin: '16px',
-    padding: '12px',
-    fontSize: '14px',
-    fontWeight: '600',
-    color: '#ffffff',
-    backgroundColor: '#8b5cf6',
-    border: 'none',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    gap: '8px',
-  },
-  buttonDisabled: {
-    backgroundColor: '#d0d0d0',
-    cursor: 'not-allowed',
-  },
-  spinner: {
-    width: '16px',
-    height: '16px',
-    border: '2px solid rgba(255, 255, 255, 0.3)',
-    borderTopColor: '#ffffff',
-  },
-  metrics: {
-    padding: '0 16px 16px 16px',
-  },
-  metricsHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#8b5cf6',
-    marginBottom: '12px',
-  },
-  metricCard: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    padding: '12px',
-    marginBottom: '8px',
-    backgroundColor: '#f8f9fa',
-    borderRadius: '8px',
-    border: '1px solid #e9ecef',
-  },
-  metricIcon: {
-    fontSize: '24px',
-  },
-  metricContent: {
-    flex: 1,
-  },
-  metricLabel: {
-    fontSize: '11px',
-    color: '#666',
-    marginBottom: '2px',
-  },
-  metricValue: {
-    fontSize: '14px',
-    fontWeight: '600',
-    color: '#242424',
-  },
-  emptyState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    padding: '40px 20px',
-    textAlign: 'center',
-  },
-  emptyIcon: {
-    fontSize: '48px',
-    marginBottom: '12px',
-    opacity: 0.3,
-  },
-  emptyText: {
-    fontSize: '13px',
-    color: '#666',
-  },
 };
+
+export default BenchmarkPanel;

@@ -16,7 +16,7 @@ function createWindow() {
     width: 1400,
     height: 900,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -46,7 +46,7 @@ function createWindow() {
 app.whenReady().then(async () => {
   // Start Python backend
   await startPythonBackend(isDev);
-  
+
   createWindow();
 
   app.on('activate', () => {
@@ -95,6 +95,24 @@ ipcMain.handle('prune-model', async (event, filePath, ratio) => {
   }
 });
 
+ipcMain.handle('remove-node', async (event, filePath, nodeName) => {
+  try {
+    const result = await callPythonAPI('remove-node', { filePath, nodeName });
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('run-benchmark', async (event, filePath, dataset) => {
+  try {
+    const result = await callPythonAPI('run-benchmark', { filePath, dataset });
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('model-info', async (event, filePath) => {
   try {
     const result = await callPythonAPI('model-info', { filePath });
@@ -116,6 +134,15 @@ ipcMain.handle('health-check', async () => {
 ipcMain.handle('get-dummy-graph', async () => {
   try {
     const result = await callPythonAPI('dummy-graph');
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-graph', async (event, sessionId) => {
+  try {
+    const result = await callPythonAPI('get-graph', { sessionId });
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message };

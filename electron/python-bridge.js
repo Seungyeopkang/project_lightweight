@@ -24,14 +24,14 @@ const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 export async function startPythonBackend(isDev) {
   return new Promise((resolve, reject) => {
     const backendPath = isDev
-      ? path.join(__dirname, '../backend')
-      : path.join(process.resourcesPath, 'backend');
+      ? path.join(__dirname, '../ai')
+      : path.join(process.resourcesPath, 'ai');
 
     log.info('Starting Python backend from:', backendPath);
     console.log('Starting Python backend from:', backendPath);
 
     // Try to use system Python or bundled Python
-    const pythonCmd = isDev ? 'python3' : 'python3';
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
     const mainPath = path.join(backendPath, 'main.py');
 
     pythonProcess = spawn(pythonCmd, [
@@ -52,7 +52,7 @@ export async function startPythonBackend(isDev) {
       const message = data.toString().trim();
       log.info(`[Python] ${message}`);
       console.log(`[Python] ${message}`);
-      
+
       if (message.includes('Uvicorn running')) {
         log.info('✅ Python backend started successfully');
         console.log('✅ Python backend started successfully');
@@ -109,8 +109,11 @@ export async function callPythonAPI(endpoint, data = {}) {
     'dummy-graph': '/api/dummy-graph',
     'upload-model': '/api/upload-model',
     'quantize': '/api/quantize',
-    'prune': '/api/prune',
-    'model-info': '/api/model-info'
+    'prune': '/api/prune-model',
+    'remove-node': '/api/remove-node',
+    'run-benchmark': '/api/benchmark',
+    'model-info': '/api/model-info',
+    'get-graph': '/api/graph'
   };
 
   const url = `${BACKEND_URL}${endpointMap[endpoint] || endpoint}`;
@@ -120,7 +123,7 @@ export async function callPythonAPI(endpoint, data = {}) {
       // File upload using FormData
       const FormData = (await import('form-data')).default;
       const fs = (await import('fs')).default;
-      
+
       log.info(`Uploading model from: ${data.filePath}`);
       const formData = new FormData();
       formData.append('model_file', fs.createReadStream(data.filePath));
@@ -133,46 +136,62 @@ export async function callPythonAPI(endpoint, data = {}) {
 
       log.info('Model uploaded successfully');
       return response.data;
-      
-    } else if (endpoint === 'quantize' || endpoint === 'prune') {
-      // Quantize or Prune model
+
+    } else if (endpoint === 'quantize' || endpoint === 'prune' || endpoint === 'remove-node' || endpoint === 'run-benchmark') {
+      // Quantize, Prune, Remove Node, or Benchmark
       const FormData = (await import('form-data')).default;
       const fs = (await import('fs')).default;
-      
+
       const operation = endpoint === 'quantize' ? 'Quantizing' : 'Pruning';
       log.info(`${operation} model from: ${data.filePath}`);
-      
+
       const formData = new FormData();
       formData.append('model_file', fs.createReadStream(data.filePath));
-      
+
       // Add pruning ratio if present
       const params = new URLSearchParams();
       if (endpoint === 'prune' && data.ratio !== undefined) {
         params.append('ratio', data.ratio);
       }
+
+      if (endpoint === 'remove-node' && data.nodeName !== undefined) {
+        formData.append('node_name', data.nodeName);
+      }
+
+      if (endpoint === 'run-benchmark' && data.dataset !== undefined) {
+        formData.append('dataset', data.dataset);
+        formData.append('limit', data.limit || 1000);
+      }
+
       const urlWithParams = params.toString() ? `${url}?${params}` : url;
 
       const response = await axios.post(urlWithParams, formData, {
         headers: formData.getHeaders(),
-        responseType: 'arraybuffer',
+        // responseType: 'arraybuffer', // REMOVE this for benchmark, it needs JSON
+        // We only need arraybuffer for prune/quantize/remove which return files
+        responseType: (endpoint === 'run-benchmark') ? 'json' : 'arraybuffer',
         maxContentLength: Infinity,
         maxBodyLength: Infinity
       });
 
+      if (endpoint === 'run-benchmark') {
+        return response.data;
+      }
+
       log.info(`Model ${endpoint}ed successfully`);
       const stats = response.headers['x-pruning-stats'] || '{}';
-      
+
       return {
         data: Buffer.from(response.data).toString('base64'),
         filename: response.headers['content-disposition']?.match(/filename="(.+)"/)?.[1] || `${endpoint}ed_model.onnx`,
         stats: stats
       };
-      
+
     } else if (endpoint === 'model-info') {
       // Get model info
       const FormData = (await import('form-data')).default;
       const fs = (await import('fs')).default;
-      
+
       log.info(`Getting model info from: ${data.filePath}`);
       const formData = new FormData();
       formData.append('model_file', fs.createReadStream(data.filePath));
@@ -185,7 +204,18 @@ export async function callPythonAPI(endpoint, data = {}) {
 
       log.info('Model info retrieved successfully');
       return response.data;
-      
+
+    } else if (endpoint === 'get-graph') {
+      // Get graph with query params
+      const params = new URLSearchParams();
+      if (data.sessionId) params.append('session_id', data.sessionId);
+
+      const urlWithParams = `${url}?${params.toString()}`;
+      log.info(`Fetching graph from: ${urlWithParams}`);
+
+      const response = await axios.get(urlWithParams);
+      return response.data;
+
     } else {
       // Regular GET request
       const response = await axios.get(url);

@@ -5,7 +5,43 @@ import useStore from '../store';
 
 cytoscape.use(dagre);
 
-export default function GraphViewer() {
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("GraphViewer Error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 20, color: 'red', border: '1px solid red' }}>
+          <h3>Graph Viewer Error</h3>
+          <pre>{this.state.error && this.state.error.toString()}</pre>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export default function GraphViewerWrapper() {
+  return (
+    <ErrorBoundary>
+      <GraphViewer />
+    </ErrorBoundary>
+  );
+}
+
+function GraphViewer() {
   const cyRef = useRef(null);
   const containerRef = useRef(null);
   const [viewMode, setViewMode] = useState('overview'); // 'overview' or 'detail'
@@ -14,9 +50,13 @@ export default function GraphViewer() {
   const modelJson = useStore((state) => state.modelJson);
   const setSelectedNode = useStore((state) => state.setSelectedNode);
 
+  // Modal State
+  const [showModal, setShowModal] = useState(false);
+  const [modalContent, setModalContent] = useState(null);
+
   useEffect(() => {
     console.log('[GraphViewer] Initializing, mode:', viewMode, 'stage:', selectedStageId);
-    
+
     if (!containerRef.current || !modelJson) {
       return;
     }
@@ -69,7 +109,7 @@ export default function GraphViewer() {
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements: [...stageNodes, ...stageEdges],
-      
+
       style: [
         {
           selector: 'node',
@@ -79,15 +119,15 @@ export default function GraphViewer() {
             'color': '#fff',
             'text-valign': 'center',
             'text-halign': 'center',
-            'font-size': '14px',
+            'font-size': '18px',
             'font-weight': '700',
             'font-family': '-apple-system, sans-serif',
-            'width': 220,  // Much larger!
-            'height': 110,  // Much larger!
+            'width': 320,  // Much larger!
+            'height': 140,  // Much larger!
             'shape': 'roundrectangle',
             'text-wrap': 'wrap',
-            'text-max-width': 205,
-            'border-width': 3,
+            'text-max-width': 300,
+            'border-width': 4,
             'border-color': '#2d5a7b'
           }
         },
@@ -190,7 +230,7 @@ export default function GraphViewer() {
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements: [...cyNodes, ...cyEdges],
-      
+
       style: [
         {
           selector: 'node',
@@ -208,15 +248,15 @@ export default function GraphViewer() {
             'color': '#fff',
             'text-valign': 'center',
             'text-halign': 'center',
-            'font-size': '11px',
+            'font-size': '16px',
             'font-weight': '600',
             'font-family': '-apple-system, sans-serif',
-            'width': 80,  // Larger for detail view
-            'height': 50,  // Larger for detail view
+            'width': 160,
+            'height': 80,
             'shape': 'roundrectangle',
             'text-wrap': 'wrap',
-            'text-max-width': 75,
-            'border-width': 2,
+            'text-max-width': 150,
+            'border-width': 3,
             'border-color': '#000'
           }
         },
@@ -295,7 +335,7 @@ export default function GraphViewer() {
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements: [...cyNodes, ...cyEdges],
-      
+
       style: [
         {
           selector: 'node',
@@ -309,31 +349,31 @@ export default function GraphViewer() {
               if (type.includes('Gemm') || type.includes('MatMul')) return '#7a4a9d';
               return '#777';
             },
-            'label': 'data(label)',
-            'color': '#fff',
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'font-size': '8px',
-            'font-weight': '500',
-            'font-family': '-apple-system, sans-serif',
-            'width': 50,
-            'height': 30,
+            'font-size': '24px',
+            'font-weight': 'bold',
+            'font-family': 'Segoe UI, sans-serif',
+            'width': 280,
+            'height': 120,
             'shape': 'roundrectangle',
             'text-wrap': 'ellipsis',
-            'text-max-width': 46,
-            'border-width': 1,
-            'border-color': '#000'
+            'text-max-width': 260,
+            'border-width': 3,
+            'border-color': '#333',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'transition-property': 'background-color, line-color, target-arrow-color',
+            'transition-duration': '0.5s'
           }
         },
         {
           selector: 'edge',
           style: {
-            'width': 1.5,
-            'line-color': '#999',
-            'target-arrow-color': '#999',
+            'width': 5,
+            'line-color': '#A0A0A0',
+            'target-arrow-color': '#A0A0A0',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
-            'arrow-scale': 0.7
+            'arrow-scale': 1.5
           }
         },
         {
@@ -371,6 +411,19 @@ export default function GraphViewer() {
       });
     });
 
+    cyRef.current.on('dbltap', 'node', (evt) => {
+      const node = evt.target;
+      const type = node.data('type');
+      if (type && type.includes('Conv')) {
+        setModalContent({
+          id: node.data('id'),
+          type: type,
+          label: node.data('label')
+        });
+        setShowModal(true);
+      }
+    });
+
     setTimeout(() => {
       if (cyRef.current) {
         cyRef.current.fit(50);
@@ -405,14 +458,71 @@ export default function GraphViewer() {
   };
 
   // Get current stage info
-  const currentStage = selectedStageId && modelJson?.stages 
+  const currentStage = selectedStageId && modelJson?.stages
     ? modelJson.stages.find(s => s.id === selectedStageId)
     : null;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', background: '#FAFAFA' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      
+
+      {/* Node Detail Modal */}
+      {showModal && modalContent && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }} onClick={() => setShowModal(false)}>
+          <div style={{
+            width: '500px',
+            background: 'white',
+            borderRadius: '12px',
+            padding: '24px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: 0, fontSize: '18px', borderBottom: '1px solid #eee', paddingBottom: '12px' }}>
+              🔧 Node Details: {modalContent.label}
+            </h3>
+
+            <div style={{ fontSize: '14px', color: '#555', lineHeight: '1.6' }}>
+              <div><strong>Type:</strong> {modalContent.type}</div>
+              <div><strong>ID:</strong> {modalContent.id}</div>
+              <div style={{ marginTop: '12px', background: '#f5f5f5', padding: '12px', borderRadius: '8px' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Internal Structure</div>
+                <div>• Weights: [Unknown] (Requires Deep Inspection)</div>
+                <div>• Bias: [Present]</div>
+                <div>• Pruning Status: 0% (Dense)</div>
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <strong>Incoming Connections:</strong>
+                <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
+                  <li>Previous Node (Input)</li>
+                </ul>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+              <button onClick={() => setShowModal(false)} style={{
+                padding: '8px 16px',
+                background: '#333',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Info */}
       {modelJson && (
         <div style={{
@@ -440,7 +550,7 @@ export default function GraphViewer() {
           )}
         </div>
       )}
-      
+
       {/* Controls */}
       <div style={{
         position: 'absolute',

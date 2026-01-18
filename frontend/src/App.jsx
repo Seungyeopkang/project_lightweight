@@ -16,7 +16,7 @@ import './App.css';
 function App() {
   const { modelJson, fetchGraphData, selectedNode, updateGraphData, setCurrentModel } = useStore();
   const [healthStatus, setHealthStatus] = useState('Checking...');
-  
+
   // Panel collapse states
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
@@ -45,11 +45,11 @@ function App() {
     <div className="App">
       <header className="App-header">
         <h1>ONNX Model Optimizer</h1>
-        
+
         {/* Model Controls - only show when model is loaded */}
         {modelJson && (
           <div style={{ display: 'flex', gap: '10px', marginLeft: 'auto' }}>
-            <button 
+            <button
               onClick={handleReset}
               style={{
                 padding: '8px 16px',
@@ -64,7 +64,7 @@ function App() {
             >
               🔄 Reset
             </button>
-            <button 
+            <button
               onClick={handleUnload}
               style={{
                 padding: '8px 16px',
@@ -82,25 +82,25 @@ function App() {
           </div>
         )}
       </header>
-      
+
       <div className="main-layout">
         {/* Left Sidebar - Layer Info */}
-        <div style={{ 
-            width: leftPanelCollapsed ? '40px' : '300px',
-            backgroundColor: '#1e1e1e',
-            borderRight: '1px solid #2d2d2d', 
-            color: '#e0e0e0',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-            fontSize: '12px',
-            display: 'flex',
-            flexDirection: 'column',
-            overflowY: 'auto',
-            position: 'relative',
-            transition: 'width 0.3s ease'
-          }}>
-          
+        <div style={{
+          width: leftPanelCollapsed ? '40px' : '300px',
+          backgroundColor: '#1e1e1e',
+          borderRight: '1px solid #2d2d2d',
+          color: '#e0e0e0',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+          fontSize: '12px',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+          position: 'relative',
+          transition: 'width 0.3s ease'
+        }}>
+
           {/* Toggle Button */}
-          <button 
+          <button
             onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
             style={{
               position: 'absolute',
@@ -123,7 +123,7 @@ function App() {
           >
             {leftPanelCollapsed ? '▶' : '◀'}
           </button>
-          
+
           {!leftPanelCollapsed && (
             <div>
               {/* Model Information Header */}
@@ -137,7 +137,7 @@ function App() {
                     <div><strong>Edges:</strong> {modelJson.edges?.length || 0}</div>
                     <div><strong>Framework:</strong> ONNX</div>
                   </div>
-                  
+
                   {/* Layer Distribution */}
                   {modelJson.nodes && modelJson.nodes.length > 0 && (
                     <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #2d2d2d' }}>
@@ -163,7 +163,45 @@ function App() {
                   )}
                 </div>
               )}
-              
+
+              {/* Optimization History */}
+              <div style={{ padding: '16px', borderBottom: '1px solid #2d2d2d' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#fff' }}>History</div>
+                  {useStore.getState().history?.length > 0 && (
+                    <button
+                      onClick={useStore.getState().undo}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '11px',
+                        backgroundColor: '#4b5563',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ↩ Undo
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+                  {useStore(state => state.history).length === 0 ? (
+                    <div style={{ color: '#666', fontStyle: 'italic' }}>No changes yet</div>
+                  ) : (
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                      {useStore(state => state.history).map((item, idx) => (
+                        <li key={idx} style={{ marginBottom: '6px', color: '#aaa', fontSize: '11px', display: 'flex', gap: '6px' }}>
+                          <span style={{ color: '#6366f1' }}>●</span>
+                          <span>{item.description}</span>
+                        </li>
+                      )).reverse()}
+                    </ul>
+                  )}
+                </div>
+              </div>
+
               {/* Selected Node Details */}
               {selectedNode ? (
                 <div>
@@ -180,23 +218,23 @@ function App() {
                   {selectedNode.attributes && Object.keys(selectedNode.attributes).length > 0 && (
                     <div style={{ padding: '10px 12px' }}>
                       <div style={{ color: '#888', marginBottom: '8px', fontSize: '11px', fontWeight: 'bold' }}>ATTRIBUTES</div>
-                      
+
                       {Object.entries(selectedNode.attributes).map(([key, val]) => (
-                        <div key={key} style={{ 
-                          display: 'grid', 
-                          gridTemplateColumns: '1fr 2fr', 
-                          gap: '10px', 
+                        <div key={key} style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr 2fr',
+                          gap: '10px',
                           marginBottom: '6px',
-                          alignItems: 'start' 
+                          alignItems: 'start'
                         }}>
                           <div style={{ color: '#aaa', fontWeight: '500' }}>{key}</div>
-                          <div style={{ 
+                          <div style={{
                             color: '#6366f1',
                             fontFamily: 'Consolas, monospace',
                             wordBreak: 'break-all'
                           }}>
                             {Array.isArray(val) ? (
-                               <span>[{val.join(', ')}]</span>
+                              <span>[{val.join(', ')}]</span>
                             ) : val}
                           </div>
                         </div>
@@ -238,7 +276,7 @@ function App() {
           )}
         </div>
 
-        
+
         {/* Right Sidebar - Optimization Controls */}
         <div style={{
           width: rightPanelCollapsed ? '40px' : '340px',
@@ -275,7 +313,7 @@ function App() {
           >
             {rightPanelCollapsed ? '◀' : '▶'}
           </button>
-          
+
           {!rightPanelCollapsed && (
             <div style={{
               padding: '0',
@@ -296,7 +334,7 @@ function App() {
           )}
         </div>
       </div>
-      
+
       <ToastContainer
         position="bottom-right"
         autoClose={3000}
