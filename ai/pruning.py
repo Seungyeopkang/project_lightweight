@@ -12,6 +12,72 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+
+class DependencyGraph:
+    """
+    Simple dependency graph to track producer-consumer relationships in ONNX model.
+    Used for structured pruning to propagate channel masks.
+    """
+    def __init__(self, model: onnx.ModelProto):
+        self.model = model
+        self.node_map = {node.name: node for node in model.graph.node}
+        self.input_map = {}  # tensor_name -> list of consuming nodes
+        self.output_map = {} # tensor_name -> producing node
+        self._build_maps()
+
+    def _build_maps(self):
+        for node in self.model.graph.node:
+            for out_name in node.output:
+                self.output_map[out_name] = node
+            for in_name in node.input:
+                if in_name not in self.input_map:
+                    self.input_map[in_name] = []
+                self.input_map[in_name].append(node)
+
+    def get_consumers(self, node: onnx.NodeProto) -> List[onnx.NodeProto]:
+        """Get nodes that consume any output of the given node"""
+        consumers = []
+        for out_name in node.output:
+            if out_name in self.input_map:
+                consumers.extend(self.input_map[out_name])
+        return consumers
+
+    def get_producer(self, tensor_name: str) -> Optional[onnx.NodeProto]:
+        """Get node that produces the given tensor"""
+        return self.output_map.get(tensor_name)
+
+    def find_next_convs(self, start_node: onnx.NodeProto) -> List[Tuple[onnx.NodeProto, str]]:
+        """
+        Traverse downstream validation-safe layers to find next Convs.
+        Returns list of (ConvNode, input_tensor_name_of_that_conv).
+        """
+        next_convs = []
+        visited = set()
+        # Queue: (current_node, output_tensor_name_being_tracked)
+        queue = [(start_node, start_node.output[0])] 
+
+        while queue:
+            curr_node, tracked_output = queue.pop(0)
+            if curr_node.name in visited:
+                continue
+            visited.add(curr_node.name)
+
+            if tracked_output not in self.input_map:
+                continue
+            
+            consumers = self.input_map[tracked_output]
+            for consumer in consumers:
+                if consumer.op_type == 'Conv':
+                    # Found a consumer Conv!
+                    next_convs.append((consumer, tracked_output))
+                elif consumer.op_type in ['Relu', 'LeakyRelu', 'BatchNormalization', 'MaxPool', 'AveragePool', 'GlobalAveragePool', 'Flatten']:
+                    # Pass through these layers
+                    if consumer.output:
+                        queue.append((consumer, consumer.output[0]))
+                
+        return next_convs
+
+
 def count_parameters(model: onnx.ModelProto) -> int:
     """Count total parameters with error handling"""
     try:
@@ -208,6 +274,9 @@ def prune_structured(
         
         pruned_model = onnx.ModelProto()
         pruned_model.CopyFrom(model)
+
+        # Build dependency graph
+        dep_graph = DependencyGraph(pruned_model)
         
         initializer_dict = {init.name: init for init in pruned_model.graph.initializer}
         
@@ -250,11 +319,68 @@ def prune_structured(
                     keep_indices = np.argsort(channel_importance)[num_to_prune:]
                     keep_indices = np.sort(keep_indices)
                     
+                    # 1. Prune Current Conv Output Weights
                     pruned_weight = weight_array[keep_indices]
                     total_pruned += weight_array.size - pruned_weight.size
                     
                     new_init = numpy_helper.from_array(pruned_weight, init.name)
                     initializer_dict[weight_name].CopyFrom(new_init)
+
+                    # Update Bias if present
+                    if len(node.input) > 2 and node.input[2] in initializer_dict:
+                        bias_init = initializer_dict[node.input[2]]
+                        bias_arr = numpy_helper.to_array(bias_init)
+                        pruned_bias = bias_arr[keep_indices]
+                        initializer_dict[node.input[2]].CopyFrom(numpy_helper.from_array(pruned_bias, bias_init.name))
+
+                    
+                    # 2. Propagate to Next Layers (BN / Conv inputs)
+                    # Find consumers using DepGraph
+                    consumers = dep_graph.input_map.get(node.output[0], [])
+                    # Queue for propagation: (node, input_idx_of_incoming_tensor)
+                    # Simpler: just use find_next_convs approach but we need to handle BNs in between
+                    
+                    # Manual breadth-first propagation for BNs
+                    prop_queue = [node.output[0]]
+                    visited_tensors = set()
+
+                    while prop_queue:
+                        curr_tensor = prop_queue.pop(0)
+                        if curr_tensor in visited_tensors: continue
+                        visited_tensors.add(curr_tensor)
+
+                        curr_consumers = dep_graph.input_map.get(curr_tensor, [])
+                        for consumer in curr_consumers:
+                            if consumer.op_type == 'BatchNormalization':
+                                # Prune BN weights (scale, B, mean, var)
+                                # Start from input 1 (scale) to 4
+                                for bin_idx in range(1, 5):
+                                    if bin_idx < len(consumer.input) and consumer.input[bin_idx] in initializer_dict:
+                                        bn_init = initializer_dict[consumer.input[bin_idx]]
+                                        bn_arr = numpy_helper.to_array(bn_init)
+                                        if len(bn_arr) == out_channels: # Safety check
+                                            pruned_bn = bn_arr[keep_indices]
+                                            initializer_dict[consumer.input[bin_idx]].CopyFrom(numpy_helper.from_array(pruned_bn, bn_init.name))
+                                # Continue propagation
+                                if consumer.output:
+                                    prop_queue.append(consumer.output[0])
+
+                            elif consumer.op_type in ['Relu', 'LeakyRelu', 'MaxPool', 'AveragePool', 'GlobalAveragePool']:
+                                # Pass through
+                                if consumer.output:
+                                    prop_queue.append(consumer.output[0])
+                            
+                            elif consumer.op_type == 'Conv':
+                                # Prune Input Channels of Next Conv
+                                # Usually input 0 is data, input 1 is weight (out, in, k, k)
+                                if len(consumer.input) > 1 and consumer.input[1] in initializer_dict:
+                                    next_w_init = initializer_dict[consumer.input[1]]
+                                    next_w_arr = numpy_helper.to_array(next_w_init)
+                                    # Shape: (out, in, k, k) - prune axis 1
+                                    if next_w_arr.shape[1] == out_channels:
+                                        pruned_next_w = next_w_arr[:, keep_indices, ...]
+                                        initializer_dict[consumer.input[1]].CopyFrom(numpy_helper.from_array(pruned_next_w, next_w_init.name))
+                                # Stop propagation at Conv (we don't prune ITS output, just its input)
                     
                     pruned_layers.append({
                         'layer': node.output[0],
@@ -519,14 +645,87 @@ def prune_pattern_based(
         }
 
 
+
+def check_removal_safety(model: onnx.ModelProto, layer_name: str) -> Tuple[bool, str]:
+    """
+    Check if removing a layer breaks the graph due to shape mismatches.
+    Returns (safe: bool, message: str)
+    """
+    try:
+        # Run shape inference to get tensor shapes
+        inferred_model = onnx.shape_inference.infer_shapes(model)
+        val_info = {v.name: v for v in inferred_model.graph.value_info}
+        # Also include inputs/outputs in shape map
+        for i in inferred_model.graph.input:
+            val_info[i.name] = i
+        for o in inferred_model.graph.output:
+            val_info[o.name] = o
+
+        target_node = None
+        for node in inferred_model.graph.node:
+            if node.output[0] == layer_name or node.name == layer_name:
+                target_node = node
+                break
+        
+        if not target_node:
+            return False, f"Layer {layer_name} not found"
+
+        input_name = target_node.input[0]
+        output_name = target_node.output[0]
+
+        # Get shapes
+        if input_name not in val_info:
+            return True, "Input shape unknown, assuming safe (risky)"
+        if output_name not in val_info:
+             return True, "Output shape unknown, assuming safe (risky)"
+        
+        input_shape_proto = val_info[input_name].type.tensor_type.shape
+        output_shape_proto = val_info[output_name].type.tensor_type.shape
+
+        input_dims = [d.dim_value for d in input_shape_proto.dim]
+        output_dims = [d.dim_value for d in output_shape_proto.dim]
+
+        # If shapes are identical, it's usually safe
+        if input_dims == output_dims:
+            return True, "Shapes match"
+
+        # If shapes mismatch, check if consumers can handle the input shape
+        # Find consumers
+        dep_graph = DependencyGraph(model)
+        consumers = dep_graph.input_map.get(output_name, [])
+        
+        for consumer in consumers:
+            # Conv/Gemm usually require specific input channels
+            if consumer.op_type == 'Conv':
+                # Conv weight shape: (M, C/group, kH, kW)
+                # We need to check if C/group matches input_dims[1]
+                # This requires finding the weight initializer for the consumer
+                # This is complex. 
+                # Simplified check: strictly require shape match for now if strict safety is requested.
+                pass
+
+        return False, f"Shape mismatch: Input {input_dims} != Output {output_dims}. Removal violates graph dependencies."
+
+    except Exception as e:
+        logger.warning(f"Safety check failed: {e}")
+        return False, f"Safety check error: {e}"
+
+
 def remove_layer_by_name(
     model: onnx.ModelProto, 
     layer_name: str
-) -> Tuple[onnx.ModelProto, bool]:
-    """Remove a specific layer with error handling"""
+) -> Tuple[onnx.ModelProto, bool, str]:
+    """Remove a specific layer with error handling and safety check"""
     try:
+        # Safety Check
+        is_safe, msg = check_removal_safety(model, layer_name)
+        if not is_safe:
+            logger.warning(f"Aborting removal of {layer_name}: {msg}")
+            return model, False, msg
+
         modified_model = onnx.ModelProto()
         modified_model.CopyFrom(model)
+        # ... (rest of logic)
         
         target_node = None
         for node in modified_model.graph.node:
@@ -536,14 +735,14 @@ def remove_layer_by_name(
         
         if target_node is None:
             logger.warning(f"Layer {layer_name} not found")
-            return model, False
+            return model, False, "Layer not found"
         
         node_input = target_node.input[0] if target_node.input else None
         node_output = target_node.output[0] if target_node.output else None
         
         if not node_input or not node_output:
             logger.warning("Cannot remove layer: missing input/output")
-            return model, False
+            return model, False, "Missing input/output"
         
         # Redirect connections
         for node in modified_model.graph.node:
@@ -567,14 +766,14 @@ def remove_layer_by_name(
         try:
             onnx.checker.check_model(modified_model)
             logger.info(f"Successfully removed layer {layer_name}")
-            return modified_model, True
+            return modified_model, True, "Success"
         except Exception as e:
             logger.error(f"Layer removal failed validation: {e}")
-            return model, False
+            return model, False, f"Validation failed: {e}"
     
     except Exception as e:
         logger.error(f"Error removing layer: {e}")
-        return model, False
+        return model, False, str(e)
 
 
 if __name__ == "__main__":

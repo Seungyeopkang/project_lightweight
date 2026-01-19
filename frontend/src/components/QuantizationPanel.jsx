@@ -20,7 +20,7 @@ export default function QuantizationPanel() {
     try {
       if (window.electronAPI) {
         addToHistory('Quantized model (INT8)');
-        const result = await window.electronAPI.quantizeModel(currentModel);
+        const result = await window.electronAPI.quantizeModel({ sessionId, filePath: currentModel });
         if (result.success) {
           toast.success('✓ Model quantized and saved!');
 
@@ -43,9 +43,28 @@ export default function QuantizationPanel() {
   };
 
   const styles = {
-    infoBox: { padding: '10px', backgroundColor: '#eff6ff', borderRadius: '6px', fontSize: '11px', color: '#1e40af', marginBottom: '12px' },
-    button: { width: '100%', padding: '10px', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' },
-    buttonDisabled: { backgroundColor: '#a7f3d0', cursor: 'wait' }
+    infoBox: {
+      padding: '12px',
+      backgroundColor: 'rgba(59, 130, 246, 0.1)', // Blue tint
+      borderRadius: '8px',
+      fontSize: '11px',
+      color: '#93c5fd',
+      marginBottom: '12px',
+      border: '1px solid rgba(59, 130, 246, 0.2)',
+      lineHeight: '1.5'
+    },
+    button: {
+      width: '100%',
+      padding: '10px',
+      backgroundColor: '#10b981',
+      color: '#fff',
+      border: 'none',
+      borderRadius: '8px',
+      cursor: 'pointer',
+      fontWeight: '600',
+      transition: 'all 0.2s'
+    },
+    buttonDisabled: { backgroundColor: 'rgba(16, 185, 129, 0.5)', cursor: 'not-allowed' }
   };
 
   return (

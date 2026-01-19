@@ -13,6 +13,7 @@ __pycache__/
 *.onnx
 *.pt
 *.pth
+*.tar.gz
 
 # IDEs
 .vscode/

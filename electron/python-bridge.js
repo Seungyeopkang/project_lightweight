@@ -108,85 +108,64 @@ export async function callPythonAPI(endpoint, data = {}) {
     'health': '/api/health',
     'dummy-graph': '/api/dummy-graph',
     'upload-model': '/api/upload-model',
-    'quantize': '/api/quantize',
+    'quantize-model': '/api/quantize-model',  // Fixed endpoint name
     'prune': '/api/prune-model',
     'remove-node': '/api/remove-node',
     'run-benchmark': '/api/benchmark',
     'model-info': '/api/model-info',
-    'get-graph': '/api/graph'
+    'get-graph': '/api/graph',
+    'undo': '/api/undo'
   };
 
   const url = `${BACKEND_URL}${endpointMap[endpoint] || endpoint}`;
 
   try {
     if (endpoint === 'upload-model') {
-      // File upload using FormData
+      // ... (same as before)
       const FormData = (await import('form-data')).default;
       const fs = (await import('fs')).default;
-
-      log.info(`Uploading model from: ${data.filePath}`);
       const formData = new FormData();
       formData.append('model_file', fs.createReadStream(data.filePath));
+      const response = await axios.post(url, formData, {
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      });
+      return response.data;
+    }
+    else if (['quantize-model', 'prune', 'remove-node', 'run-benchmark', 'undo'].includes(endpoint)) {
+      const FormData = (await import('form-data')).default;
+      const formData = new FormData();
+
+      // Prefer session_id if available to avoid re-upload
+      if (data.sessionId) {
+        formData.append('session_id', data.sessionId);
+      } else if (data.filePath) {
+        const fs = (await import('fs')).default;
+        formData.append('model_file', fs.createReadStream(data.filePath));
+      }
+
+      // Add specific params
+      if (endpoint === 'prune' && data.ratio !== undefined) {
+        formData.append('ratio', data.ratio);
+        if (data.method) formData.append('method', data.method);
+      }
+
+      if (endpoint === 'remove-node' && data.nodeName) {
+        formData.append('node_name', data.nodeName);
+      }
+
+      if (endpoint === 'run-benchmark') {
+        if (data.dataset) formData.append('dataset', data.dataset);
+        if (data.limit) formData.append('limit', data.limit);
+      }
 
       const response = await axios.post(url, formData, {
         headers: formData.getHeaders(),
         maxContentLength: Infinity,
         maxBodyLength: Infinity
       });
-
-      log.info('Model uploaded successfully');
       return response.data;
-
-    } else if (endpoint === 'quantize' || endpoint === 'prune' || endpoint === 'remove-node' || endpoint === 'run-benchmark') {
-      // Quantize, Prune, Remove Node, or Benchmark
-      const FormData = (await import('form-data')).default;
-      const fs = (await import('fs')).default;
-
-      const operation = endpoint === 'quantize' ? 'Quantizing' : 'Pruning';
-      log.info(`${operation} model from: ${data.filePath}`);
-
-      const formData = new FormData();
-      formData.append('model_file', fs.createReadStream(data.filePath));
-
-      // Add pruning ratio if present
-      const params = new URLSearchParams();
-      if (endpoint === 'prune' && data.ratio !== undefined) {
-        params.append('ratio', data.ratio);
-      }
-
-      if (endpoint === 'remove-node' && data.nodeName !== undefined) {
-        formData.append('node_name', data.nodeName);
-      }
-
-      if (endpoint === 'run-benchmark' && data.dataset !== undefined) {
-        formData.append('dataset', data.dataset);
-        formData.append('limit', data.limit || 1000);
-      }
-
-      const urlWithParams = params.toString() ? `${url}?${params}` : url;
-
-      const response = await axios.post(urlWithParams, formData, {
-        headers: formData.getHeaders(),
-        // responseType: 'arraybuffer', // REMOVE this for benchmark, it needs JSON
-        // We only need arraybuffer for prune/quantize/remove which return files
-        responseType: (endpoint === 'run-benchmark') ? 'json' : 'arraybuffer',
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
-      });
-
-      if (endpoint === 'run-benchmark') {
-        return response.data;
-      }
-
-      log.info(`Model ${endpoint}ed successfully`);
-      const stats = response.headers['x-pruning-stats'] || '{}';
-
-      return {
-        data: Buffer.from(response.data).toString('base64'),
-        filename: response.headers['content-disposition']?.match(/filename="(.+)"/)?.[1] || `${endpoint}ed_model.onnx`,
-        stats: stats
-      };
-
     } else if (endpoint === 'model-info') {
       // Get model info
       const FormData = (await import('form-data')).default;

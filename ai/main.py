@@ -17,7 +17,7 @@ from pruning import (
     prune_gradient_based,
     prune_pattern_based
 )
-# quantization and benchmark imports removed - not yet implemented
+from onnxruntime.quantization import quantize_dynamic, QuantType
 from graph_parser import parse_onnx_graph_hierarchical
 
 logging.basicConfig(level=logging.INFO)
@@ -25,13 +25,14 @@ logger = logging.getLogger(__name__)
 
 # Session storage
 sessions: Dict[str, Dict] = {}
+session_history: Dict[str, List[str]] = {}
 
 app = FastAPI()
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "file://*", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,6 +42,49 @@ def get_session_model(session_id: str) -> str:
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     return sessions[session_id]["model_path"]
+
+def push_history(session_id: str):
+    """Save current model path to history stack"""
+    if session_id not in sessions:
+        return
+    
+    current_path = sessions[session_id]["model_path"]
+    if session_id not in session_history:
+        session_history[session_id] = []
+    
+    # Store copy or path?
+    # Since we overwrite or create new files, if we create new files every time, we can just store the path.
+    # remove-node creates "removed_..."
+    # prune creates "pruned_..."
+    # So storing path is fine provided we don't delete them immediately.
+    # However, if we overwrite, we need to copy.
+    # The current logic creates NEW files mostly.
+    
+    # But to be safe against overwrite, let's create a backup version if it's the same name?
+    # For now, just store the path, assuming immutability of past step files or unique naming.
+    session_history[session_id].append(current_path)
+
+@app.post("/api/undo")
+async def undo_last_action(session_id: str = Form(...)):
+    """Revert to previous model state"""
+    if session_id not in session_history or not session_history[session_id]:
+        raise HTTPException(400, "No history to undo")
+    
+    previous_path = session_history[session_id].pop()
+    
+    if not os.path.exists(previous_path):
+         raise HTTPException(500, "History file missing")
+    
+    # Restore
+    sessions[session_id]["model_path"] = previous_path
+    
+    # Parse graph
+    model = onnx.load(previous_path)
+    graph_data = parse_onnx_graph_hierarchical(model)
+    graph_data['session_id'] = session_id
+    graph_data['message'] = "Undone successfully"
+    return graph_data
+
 
 @app.get("/")
 def read_root():
@@ -94,7 +138,7 @@ async def prune_model(
     method: str = Form("magnitude"),
     ratio: float = Form(0.3)
 ):
-    """Prune with multiple methods (Supports both session-based and file-upload based)"""
+    """Prune and return the new graph structure (not file download)"""
     try:
         model = None
         current_session_id = session_id
@@ -111,6 +155,7 @@ async def prune_model(
             # Register session implicitly?
             sessions[current_session_id] = {"model_path": temp_path, "created_at": time.time()}
         elif session_id:
+            push_history(session_id) # Save history before change
             model_path = get_session_model(session_id)
             model = onnx.load(model_path)
         else:
@@ -131,31 +176,44 @@ async def prune_model(
         if not stats.get('success'):
             raise HTTPException(500, stats.get('error', 'Pruning failed'))
         
-        # 3. Save & Return
-        output_path = f"/tmp/pruned_{current_session_id}.onnx"
+        # 3. Save to temp
+        output_path = f"/tmp/pruned_{current_session_id}_{int(time.time())}.onnx"
         onnx.save(pruned, output_path)
         
         # Update session
-        sessions[current_session_id] = {
-            "model_path": output_path,
-            "created_at": time.time()
-        }
+        sessions[current_session_id]["model_path"] = output_path
         
-        # Serialize stats to JSON string for header
-        import json
-        stats_header = json.dumps(stats)
+        # 4. Parse new graph for UI
+        graph_data = parse_onnx_graph_hierarchical(pruned)
+        graph_data['session_id'] = current_session_id
+        graph_data['stats'] = stats # Pass stats to frontend
         
-        return FileResponse(
-            output_path,
-            media_type="application/octet-stream",
-            filename=f"model_pruned_{method}.onnx",
-            headers={"x-pruning-stats": stats_header, "x-session-id": current_session_id}
-        )
+        return graph_data
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Pruning error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, str(e))
+
+@app.get("/api/download-model")
+async def download_model(session_id: str):
+    """Download the current session model"""
+    try:
+        model_path = get_session_model(session_id)
+        filename = os.path.basename(model_path)
+        if not filename.endswith('.onnx'):
+            filename = "model.onnx"
+            
+        return FileResponse(
+            model_path,
+            media_type="application/octet-stream",
+            filename=filename
+        )
+    except Exception as e:
+        raise HTTPException(404, str(e))
 
 from pruning import remove_layer_by_name
 
@@ -178,34 +236,34 @@ async def remove_node(
             with open(temp_path, 'wb') as f:
                 f.write(contents)
             model = onnx.load(temp_path)
+            sessions[current_session_id] = {"model_path": temp_path, "created_at": time.time()}
         elif session_id:
+            push_history(session_id) # Save history
             model_path = get_session_model(session_id)
             model = onnx.load(model_path)
         else:
             raise HTTPException(400, "Either session_id or model_file is required")
 
         # 2. Remove Layer
-        modified_model, success = remove_layer_by_name(model, node_name)
+        modified_model, success, msg = remove_layer_by_name(model, node_name)
         
         if not success:
-             raise HTTPException(500, f"Failed to remove node '{node_name}'. Ensure it exists and connectivity can be preserved.")
+             # Just raise error, frontend will catch it
+             raise HTTPException(500, f"Removal Failed: {msg}")
 
         # 3. Save & Return
-        output_path = f"/tmp/removed_{current_session_id}.onnx"
+        output_path = f"/tmp/removed_{current_session_id}_{int(time.time())}.onnx"
         onnx.save(modified_model, output_path)
         
         # Update session with new model path
-        sessions[current_session_id] = {
-            "model_path": output_path,
-            "created_at": time.time()
-        }
+        sessions[current_session_id]["model_path"] = output_path
         
-        return FileResponse(
-            output_path,
-            media_type="application/octet-stream",
-            filename=f"model_removed_{node_name}.onnx",
-            headers={"x-operation": "remove-node", "x-node": node_name, "x-session-id": current_session_id}
-        )
+        # 4. Parse new graph for UI
+        graph_data = parse_onnx_graph_hierarchical(modified_model)
+        graph_data['session_id'] = current_session_id
+        graph_data['message'] = f"Node {node_name} removed successfully"
+        
+        return graph_data
     except Exception as e:
         logger.error(f"Remove node error: {e}")
         raise HTTPException(500, str(e))
@@ -233,7 +291,8 @@ async def quantize_model(session_id: str = Form(...)):
         quantize_dynamic(
             model_path,
             output_path,
-            weight_type=QuantType.QUInt8
+            weight_type=QuantType.QUInt8,
+            extra_options={'DisableShapeInference': True}
         )
         
         return FileResponse(
@@ -242,6 +301,9 @@ async def quantize_model(session_id: str = Form(...)):
             filename="model_quantized.onnx"
         )
     except Exception as e:
+        logger.error(f"Quantization error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, str(e))
 
 @app.post("/api/benchmark")

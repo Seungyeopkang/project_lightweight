@@ -77,36 +77,45 @@ ipcMain.handle('upload-model', async (event, filePath) => {
   }
 });
 
-ipcMain.handle('quantize-model', async (event, filePath) => {
+ipcMain.handle('quantize-model', async (event, args) => {
   try {
-    const result = await callPythonAPI('quantize', { filePath });
+    const result = await callPythonAPI('quantize-model', args);
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle('prune-model', async (event, filePath, ratio) => {
+ipcMain.handle('prune-model', async (event, args) => {
   try {
-    const result = await callPythonAPI('prune', { filePath, ratio });
+    const result = await callPythonAPI('prune', args);
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle('remove-node', async (event, filePath, nodeName) => {
+ipcMain.handle('remove-node', async (event, args) => {
   try {
-    const result = await callPythonAPI('remove-node', { filePath, nodeName });
+    const result = await callPythonAPI('remove-node', args);
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle('run-benchmark', async (event, filePath, dataset) => {
+ipcMain.handle('run-benchmark', async (event, args) => {
   try {
-    const result = await callPythonAPI('run-benchmark', { filePath, dataset });
+    const result = await callPythonAPI('run-benchmark', args);
+    return { success: true, data: result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('undo', async (event, args) => {
+  try {
+    const result = await callPythonAPI('undo', args);
     return { success: true, data: result };
   } catch (error) {
     return { success: false, error: error.message };
@@ -136,6 +145,27 @@ ipcMain.handle('get-dummy-graph', async () => {
     const result = await callPythonAPI('dummy-graph');
     return { success: true, data: result };
   } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('save-remote-model', async (event, sessionId) => {
+  try {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      filters: [{ name: 'ONNX Models', extensions: ['onnx'] }]
+    });
+    if (canceled || !filePath) return { canceled: true };
+
+    const response = await axios({
+      method: 'get',
+      url: `http://127.0.0.1:8000/api/download-model?session_id=${sessionId}`,
+      responseType: 'arraybuffer'
+    });
+
+    require('fs').writeFileSync(filePath, Buffer.from(response.data));
+    return { success: true, filePath };
+  } catch (error) {
+    console.error('Save remote model error:', error);
     return { success: false, error: error.message };
   }
 });

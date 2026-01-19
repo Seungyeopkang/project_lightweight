@@ -4,22 +4,25 @@ import CollapsiblePanel from './common/CollapsiblePanel';
 import { toast } from 'react-toastify';
 
 const BenchmarkPanel = () => {
-  const { currentModel } = useStore();
+  const { currentModel, sessionId } = useStore();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [dataset, setDataset] = useState('cifar10');
 
   const handleRunBenchmark = async () => {
-    if (!currentModel) return;
+    if (!currentModel || typeof currentModel !== 'string') {
+      toast.warning('Please upload a model first');
+      return;
+    }
 
     setLoading(true);
     setResult(null);
     try {
-      const data = await window.electronAPI.runBenchmark(currentModel.path, dataset);
-      if (data.error) {
-        toast.error(`Benchmark Failed: ${data.error}`);
+      const response = await window.electronAPI.runBenchmark({ sessionId, filePath: currentModel, dataset });
+      if (!response.success) {
+        toast.error(`Benchmark Failed: ${response.error}`);
       } else {
-        setResult(data);
+        setResult(response.data);
         toast.success("Benchmark Completed!");
       }
     } catch (err) {
@@ -39,34 +42,37 @@ const BenchmarkPanel = () => {
     select: {
       width: '100%',
       padding: '8px',
-      borderRadius: '4px',
-      border: '1px solid #ddd',
-      fontSize: '13px'
+      borderRadius: '6px',
+      border: '1px solid rgba(255, 255, 255, 0.2)',
+      fontSize: '13px',
+      backgroundColor: 'rgba(0, 0, 0, 0.2)',
+      color: '#fff',
+      outline: 'none'
     },
     button: {
       padding: '10px',
       backgroundColor: '#10b981', // Emerald 500
       color: 'white',
       border: 'none',
-      borderRadius: '6px',
+      borderRadius: '8px',
       cursor: 'pointer',
       fontSize: '13px',
       fontWeight: '600',
-      transition: 'background 0.2s'
+      transition: 'all 0.2s'
     },
     resultBox: {
       marginTop: '10px',
-      padding: '10px',
-      backgroundColor: '#f8fafc', // Slate 50
-      borderRadius: '6px',
-      border: '1px solid #e2e8f0',
+      padding: '12px',
+      backgroundColor: 'rgba(16, 185, 129, 0.1)', // Emerald tint
+      borderRadius: '8px',
+      border: '1px solid rgba(16, 185, 129, 0.2)',
       fontSize: '13px'
     },
     metricRow: {
       display: 'flex',
       justifyContent: 'space-between',
       marginBottom: '6px',
-      borderBottom: '1px dashed #cbd5e1',
+      borderBottom: '1px dashed rgba(255, 255, 255, 0.1)',
       paddingBottom: '4px'
     }
   };
@@ -75,7 +81,7 @@ const BenchmarkPanel = () => {
     <CollapsiblePanel title="Local Benchmark" icon="🚀">
       <div style={styles.container}>
         <div>
-          <label style={{ display: 'block', fontSize: '11px', color: '#666', marginBottom: '4px' }}>Dataset</label>
+          <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Dataset</label>
           <select
             style={styles.select}
             value={dataset}
@@ -89,7 +95,7 @@ const BenchmarkPanel = () => {
         <button
           style={{
             ...styles.button,
-            backgroundColor: loading ? '#6ee7b7' : '#10b981',
+            backgroundColor: loading ? 'rgba(16, 185, 129, 0.5)' : '#10b981',
             cursor: loading ? 'wait' : 'pointer'
           }}
           onClick={handleRunBenchmark}
@@ -101,16 +107,16 @@ const BenchmarkPanel = () => {
         {result && (
           <div style={styles.resultBox}>
             <div style={styles.metricRow}>
-              <span style={{ color: '#64748b' }}>Accuracy</span>
-              <span style={{ color: '#0f172a', fontWeight: 'bold' }}>{result.accuracy.toFixed(2)}%</span>
+              <span style={{ color: '#cbd5e1' }}>Accuracy</span>
+              <span style={{ color: '#fff', fontWeight: 'bold' }}>{result.accuracy.toFixed(2)}%</span>
             </div>
             <div style={styles.metricRow}>
-              <span style={{ color: '#64748b' }}>Latency (Avg)</span>
-              <span style={{ color: '#0f172a', fontWeight: 'bold' }}>{result.latency_ms.toFixed(2)} ms</span>
+              <span style={{ color: '#cbd5e1' }}>Latency (Avg)</span>
+              <span style={{ color: '#fff', fontWeight: 'bold' }}>{result.latency_ms.toFixed(2)} ms</span>
             </div>
-            <div style={styles.metricRow}>
-              <span style={{ color: '#64748b' }}>Samples</span>
-              <span>{result.samples}</span>
+            <div style={{ ...styles.metricRow, borderBottom: 'none' }}>
+              <span style={{ color: '#cbd5e1' }}>Samples</span>
+              <span style={{ color: '#e2e8f0' }}>{result.samples}</span>
             </div>
           </div>
         )}

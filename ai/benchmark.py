@@ -57,8 +57,51 @@ def evaluate_model(model_path, dataset_name="cifar10", limit=1000):
 
     # Run Inference
     session = ort.InferenceSession(model_path)
-    input_name = session.get_inputs()[0].name
+    input_info = session.get_inputs()[0]
+    input_name = input_info.name
+    input_shape = input_info.shape
     
+    # Determine target size from model input
+    # Expected format: [batch, channels, height, width]
+    target_h, target_w = 32, 32
+    need_resize = False
+    
+    if len(input_shape) == 4:
+        # Check height/width (indices 2 and 3)
+        h = input_shape[2]
+        w = input_shape[3]
+        
+        # Handle dynamic axes (often strings or -1)
+        if isinstance(h, int) and isinstance(w, int):
+             if h > 0 and w > 0 and (h != 32 or w != 32):
+                 target_h, target_w = h, w
+                 need_resize = True
+    
+    # Resize whole batch if needed using Torch (available in requirements)
+    if need_resize:
+        try:
+            import torch
+            import torch.nn.functional as F
+            
+            # Convert to tensor: (N, 3, 32, 32)
+            img_tensor = torch.from_numpy(images)
+            
+            # Resize
+            img_resized = F.interpolate(
+                img_tensor, 
+                size=(target_h, target_w), 
+                mode='bilinear', 
+                align_corners=False
+            )
+            
+            images = img_resized.numpy()
+            print(f"Resized inputs from 32x32 to {target_h}x{target_w}")
+            
+        except ImportError:
+            print("Warning: Torch not found for resizing. Benchmark might fail if shapes mismatch.")
+        except Exception as e:
+            print(f"Resize error: {e}")
+
     correct = 0
     import time
     start_time = time.time()
