@@ -15,10 +15,13 @@ from pruning import (
     prune_by_magnitude,
     prune_structured,
     prune_gradient_based,
-    prune_pattern_based
+    prune_pattern_based,
+    remove_layer_by_name,
+    prune_single_node,
+    count_parameters
 )
 from onnxruntime.quantization import quantize_dynamic, QuantType
-from graph_parser import parse_onnx_graph_hierarchical
+from graph_parser import parse_onnx_graph_hierarchical, get_node_detailed_stats
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -352,6 +355,81 @@ async def benchmark_model(
         import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
+
+@app.post("/api/get-node-details")
+async def get_node_details(
+    session_id: str = Form(...),
+    node_name: str = Form(...)
+):
+    """
+    Get granular details for a specific node (weights, channels, sparsity).
+    """
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    model_path = sessions[session_id]["model_path"]
+    
+    try:
+        model = onnx.load(model_path)
+        stats = get_node_detailed_stats(model, node_name)
+        return stats
+    except Exception as e:
+        logger.error(f"Error fetching node details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/apply-node-pruning")
+async def apply_node_pruning(
+    session_id: str = Form(...),
+    node_name: str = Form(...),
+    threshold: float = Form(0.1),
+    mode: str = Form('unstructured') # 'structured' or 'unstructured'
+):
+    """
+    Apply pruning to a single node.
+    Currently only supports 'unstructured' (weight zeroing).
+    'structured' is a placeholder.
+    """
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if mode == 'structured':
+         # User requested only button for now, logic not implemented
+         return {'success': False, 'error': 'Structured pruning for single node not yet implemented.'}
+
+    push_history(session_id) # Save current state to history
+
+    model_path = sessions[session_id]["model_path"]
+    try:
+        model = onnx.load(model_path)
+        
+        # Apply Pruning
+        success, msg, new_sparsity = prune_single_node(model, node_name, threshold)
+        
+        if not success:
+             raise Exception(msg)
+
+        # Save Result
+        output_path = f"/tmp/node_pruned_{session_id}_{int(time.time())}.onnx"
+        onnx.save(model, output_path)
+        sessions[session_id]["model_path"] = output_path
+        
+        # Parse for Frontend
+        graph_data = parse_onnx_graph_hierarchical(model)
+        graph_data['session_id'] = session_id
+        graph_data['stats'] = {
+            'success': True,
+            'message': msg,
+            'node_id': node_name,
+            'new_sparsity': new_sparsity
+        }
+        
+        return graph_data
+
+    except Exception as e:
+        logger.error(f"Node pruning error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

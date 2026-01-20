@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-const CollapsiblePanel = ({ title, children, defaultOpen = false, icon = "▶" }) => {
+const CollapsiblePanel = ({ title, children, defaultOpen = false, icon = null }) => {
     const [isOpen, setIsOpen] = useState(defaultOpen);
     const contentRef = useRef(null);
     const [height, setHeight] = useState(defaultOpen ? 'auto' : '0px');

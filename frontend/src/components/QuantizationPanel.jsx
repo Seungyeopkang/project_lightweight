@@ -68,7 +68,7 @@ export default function QuantizationPanel() {
   };
 
   return (
-    <CollapsiblePanel title="Quantization" icon="🧊">
+    <CollapsiblePanel title="Quantization">
       <div>
         <div style={styles.infoBox}>
           <strong>INT8 Dynamic Quantization</strong><br />

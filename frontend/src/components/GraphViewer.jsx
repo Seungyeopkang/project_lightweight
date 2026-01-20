@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import NodeDetailModal from './NodeDetailModal';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import useStore from '../store';
@@ -218,18 +219,13 @@ function GraphViewer() {
 
     cyRef.current.on('dbltap', 'node', (evt) => {
       const node = evt.target;
-      setModalContent({
-        id: node.data('id'),
-        type: node.data('type'),
-        label: node.data('label'),
-        fullData: node.data('fullData')
-      });
+      setModalContent(node.data('id')); // Just pass ID, modal fetches details
       setShowModal(true);
     });
 
     // Initial Fit
     setTimeout(() => {
-      if (cyRef.current) {
+      if (cyRef.current && containerRef.current) {
         const extent = cyRef.current.elements().boundingBox();
         const containerWidth = containerRef.current.clientWidth;
 
@@ -825,6 +821,16 @@ function GraphViewer() {
         <button onClick={handleZoomIn} style={darkBtnStyle}>+</button>
         <button onClick={handleZoomOut} style={darkBtnStyle}>−</button>
         <button onClick={handleFit} style={darkBtnStyle}>⊡</button>
+        {/* Detail Modal */}
+        <NodeDetailModal
+          isOpen={showModal}
+          onClose={() => setShowModal(false)}
+          nodeId={modalContent}
+          onPruningComplete={(stats) => {
+            alert(`Pruning Applied!\n${stats.message}`);
+            refreshGraph();
+          }}
+        />
       </div>
     </div>
   );

@@ -178,6 +178,8 @@
     flex: 1;
     display: flex;
     padding: 24px;
+    padding-right: 28px;
+    /* Add extra padding for floating toggle button */
     box-sizing: border-box;
     overflow: hidden;
     position: relative;
@@ -203,23 +205,34 @@
     overflow: hidden;
 }
 
-/* Scrollbar Customization */
+/* Scrollbar Customization - Improved Clickability */
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 14px;
+    height: 14px;
 }
 
 ::-webkit-scrollbar-track {
     background: rgba(255, 255, 255, 0.02);
+    border-left: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.15);
-    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    border: 3px solid rgba(0, 0, 0, 0);
+    /* Transparent border for padding effect */
+    background-clip: content-box;
+    min-height: 40px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.3);
+    border: 3px solid rgba(0, 0, 0, 0);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 /* Utility to override defaults if needed */

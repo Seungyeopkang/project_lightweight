@@ -78,7 +78,7 @@ const BenchmarkPanel = () => {
   };
 
   return (
-    <CollapsiblePanel title="Local Benchmark" icon="🚀">
+    <CollapsiblePanel title="Local Benchmark">
       <div style={styles.container}>
         <div>
           <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Dataset</label>

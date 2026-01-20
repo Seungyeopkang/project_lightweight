@@ -182,113 +182,150 @@ export default function PruningPanel() {
   };
 
   return (
-    <CollapsiblePanel title="Pruning & Inspection" icon="✂️" defaultOpen={true}>
+    <CollapsiblePanel title="Global Pruning" defaultExpanded={true}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-        {/* MODE 1: Node Selected (Inspector View) */}
-        {selectedNode ? (
-          <div style={{ animation: 'fadeIn 0.2s' }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '16px',
-              borderBottom: '1px solid rgba(255,255,255,0.1)',
-              paddingBottom: '8px'
-            }}>
-              {/* Big Type Name */}
-              <div style={{ fontWeight: '600', fontSize: '18px', color: '#fff' }}>
-                {selectedNode.data.type}
-              </div>
-              <button
-                onClick={() => setSelectedNode(null)}
-                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '18px' }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div style={{ marginBottom: '16px', color: '#888', fontSize: '13px' }}>
-              <p>Node details are now shown in the Left Sidebar.</p>
-            </div>
-
-            {/* Actions */}
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '16px' }}>
-              <button
-                onClick={handleRemoveNode}
-                disabled={isRemoving}
-                style={{ ...styles.button, backgroundColor: '#ef4444' }}
-              >
-                {isRemoving ? 'Removing Link/Node...' : 'Delete Node'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* MODE 2: No Selection (Global Pruning) */
-          <div style={{ animation: 'fadeIn 0.2s' }}>
-            <div style={styles.section}>
-              <label style={styles.label}>Method</label>
-              <select
-                value={pruningMethod}
-                onChange={e => setPruningMethod(e.target.value)}
-                style={styles.select}
-              >
-                <option value="magnitude">Magnitude-based</option>
-                <option value="structured">Structured (Channel-wise)</option>
-                <option value="gradient">Gradient-based</option>
-                <option value="pattern">Pattern-based (2:4)</option>
-              </select>
-              <div style={styles.hint}>{methodDescriptions[pruningMethod]}</div>
-            </div>
-
-            <div style={styles.section}>
-              <label style={styles.label}>
-                Pruning Ratio: <strong style={{ color: '#6366f1' }}>{pruningRatio}%</strong>
-              </label>
-              <input
-                type="range" min="10" max="90" value={pruningRatio}
-                onChange={(e) => setPruningRatio(e.target.value)}
-                style={styles.slider}
-              />
-              <div style={styles.hint}>Percentage of weights to remove</div>
-            </div>
-
+        {/* Pruning Method Selection */}
+        <div>
+          <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#ccc' }}>
+            Pruning Type
+          </label>
+          <div style={{ display: 'flex', gap: '12px', background: 'rgba(0,0,0,0.2)', padding: '4px', borderRadius: '6px' }}>
             <button
-              onClick={handlePrune}
-              disabled={isPruning}
-              style={{ ...styles.button, ...(isPruning ? styles.buttonDisabled : {}) }}
+              style={{
+                flex: 1,
+                padding: '8px',
+                background: pruningMethod === 'magnitude' ? '#6366f1' : 'transparent',
+                color: pruningMethod === 'magnitude' ? '#fff' : '#888',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+                transition: 'all 0.2s'
+              }}
+              onClick={() => setPruningMethod('magnitude')}
             >
-              {isPruning ? 'Pruning...' : 'Apply Global Pruning'}
+              Unstructured (Weight)
             </button>
+            <button
+              style={{
+                flex: 1,
+                padding: '8px',
+                background: pruningMethod === 'structured' ? '#10b981' : 'transparent', // Different color for distinction
+                color: pruningMethod === 'structured' ? '#fff' : '#888',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+                transition: 'all 0.2s'
+              }}
+              onClick={() => setPruningMethod('structured')}
+            >
+              Structured (Channel)
+            </button>
+          </div>
+          <div style={{ marginTop: '8px', fontSize: '11px', color: '#666', fontStyle: 'italic', lineHeight: '1.4' }}>
+            {pruningMethod === 'magnitude'
+              ? "Removes individual connections with low weight. Higher sparsity, but channel count remains same."
+              : "Removes entire channels/filters. Reduces channel dimensions (e.g. 64 → 48). Experimental."}
+          </div>
+        </div>
 
-            {pruningStats && (
-              <div style={styles.stats}>
-                <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#6366f1' }}>Pruning Results</div>
-                <div style={styles.statItem}><span>Params:</span> <span>{pruningStats.pruned_params?.toLocaleString()} / {pruningStats.total_params?.toLocaleString()}</span></div>
-                <div style={styles.statItem}><span>Ratio:</span> <span>{(pruningStats.pruning_ratio * 100).toFixed(2)}%</span></div>
-              </div>
-            )}
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#ccc' }}>
+              Target Sparsity Ratio
+            </label>
+            <span style={{ fontSize: '12px', color: '#6366f1', fontWeight: 'bold' }}>
+              {pruningRatio}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min="1"
+            max="99"
+            value={pruningRatio}
+            onChange={(e) => setPruningRatio(parseInt(e.target.value))}
+            step={1}
+            style={{
+              width: '100%',
+              height: '32px', // Larger touch/click area
+              cursor: 'pointer',
+              accentColor: pruningMethod === 'magnitude' ? '#6366f1' : '#10b981',
+              margin: '10px 0'
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', opacity: 0.5, fontSize: '10px' }}>
+            <span>1% (Light)</span>
+            <span>99% (Aggressive)</span>
+          </div>
+          <div style={{ marginTop: '8px', fontSize: '11px', color: '#666' }}>
+            {methodDescriptions[pruningMethod]}
+          </div>
+        </div>
+
+        <button
+          onClick={handlePrune}
+          disabled={isPruning || !currentModel}
+          style={{
+            width: '100%',
+            padding: '12px',
+            background: isPruning ? '#4b5563' : (pruningMethod === 'magnitude' ? '#6366f1' : '#10b981'),
+            color: 'white',
+            border: 'none',
+            borderRadius: '6px',
+            cursor: isPruning || !currentModel ? 'not-allowed' : 'pointer',
+            fontWeight: '600',
+            transition: 'background 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+
+            justifyContent: 'center',
+            gap: '8px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.2)'
+          }}
+        >
+          {isPruning ? (
+            <>
+              <div className="spinner" style={{ width: '16px', height: '16px', border: '2px solid #fff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+              Pruning...
+            </>
+          ) : (
+            <>
+              Apply {pruningMethod === 'magnitude' ? 'Unstructured' : 'Structured'} Pruning
+            </>
+          )}
+        </button>
+
+        {pruningStats && (
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '6px', fontSize: '12px' }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#6366f1' }}>Pruning Results</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}><span>Params:</span> <span style={{ color: '#fff' }}>{pruningStats.pruned_params?.toLocaleString()} / {pruningStats.total_params?.toLocaleString()}</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Ratio:</span> <span style={{ color: '#fff' }}>{(pruningStats.pruning_ratio * 100).toFixed(2)}%</span></div>
           </div>
         )}
 
-        {/* Global Actions (Always visible if unsaved) */}
+
+        {/* Global Actions (Restored & Cleaned) */}
         {hasUnsavedChanges && (
-          <div style={{ display: 'flex', gap: '8px', marginTop: '12px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '12px' }}>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
             <button
               onClick={handleUndo}
               style={{ ...styles.button, backgroundColor: '#64748b', flex: 1 }}
             >
-              ↶ Undo
+              Undo
             </button>
             <button
               onClick={handleSaveModel}
               style={{ ...styles.button, backgroundColor: '#10b981', flex: 1 }}
             >
-              💾 Save
+              Save
             </button>
           </div>
         )}
       </div>
-    </CollapsiblePanel>
+    </CollapsiblePanel >
   );
 }

@@ -134,7 +134,11 @@ def prune_by_magnitude(
     layer_types: Optional[List[str]] = None
 ) -> Tuple[onnx.ModelProto, Dict]:
     """
-    Prune model by removing smallest magnitude weights with robust error handling
+    Global Unstructured Pruning:
+    1. Collect all weights.
+    2. Determine global threshold based on ratio.
+    3. Mask weights < threshold (set to 0).
+    4. Keep Shapes UNCHANGED.
     """
     try:
         validate_pruning_ratio(ratio)
@@ -148,9 +152,9 @@ def prune_by_magnitude(
         
         initializer_dict = {init.name: init for init in pruned_model.graph.initializer}
         
-        total_pruned = 0
-        total_params = 0
-        pruned_layers = []
+        # 1. Collect all weights for global thresholding
+        all_weights = []
+        nodes_to_prune = [] # List of (node, weight_name, init)
         
         for node in pruned_model.graph.node:
             if node.op_type not in layer_types:
@@ -160,93 +164,74 @@ def prune_by_magnitude(
             for input_name in node.input:
                 if input_name in initializer_dict:
                     init = initializer_dict[input_name]
+                    # Heuristic: Weights usually have >1 dim.
                     if len(init.dims) >= 2:
                         weight_name = input_name
                         break
             
-            if weight_name is None:
-                continue
-            
-            try:
+            if weight_name:
                 init = initializer_dict[weight_name]
-                weight_array = numpy_helper.to_array(init)
-                original_shape = weight_array.shape
-                total_params += weight_array.size
-                
-                # Apply channel/row pruning
-                if node.op_type == 'Conv' and len(original_shape) == 4:
-                    num_channels = original_shape[0]
-                    num_to_prune = int(num_channels * ratio)
-                    
-                    if num_to_prune > 0 and num_to_prune < num_channels:
-                        channel_importance = np.linalg.norm(
-                            weight_array.reshape(num_channels, -1), 
-                            axis=1
-                        )
-                        keep_indices = np.argsort(channel_importance)[num_to_prune:]
-                        keep_indices = np.sort(keep_indices)
-                        
-                        pruned_weight = weight_array[keep_indices]
-                        total_pruned += weight_array.size - pruned_weight.size
-                        
-                        new_init = numpy_helper.from_array(pruned_weight, init.name)
-                        initializer_dict[weight_name].CopyFrom(new_init)
-                        
-                        pruned_layers.append({
-                            'layer': node.output[0],
-                            'type': node.op_type,
-                            'original_channels': num_channels,
-                            'pruned_channels': num_to_prune,
-                            'remaining_channels': len(keep_indices)
-                        })
-                
-                elif node.op_type in ['Gemm', 'MatMul'] and len(original_shape) == 2:
-                    num_rows = original_shape[0]
-                    num_to_prune = int(num_rows * ratio)
-                    
-                    if num_to_prune > 0 and num_to_prune < num_rows:
-                        row_importance = np.linalg.norm(weight_array, axis=1)
-                        keep_indices = np.argsort(row_importance)[num_to_prune:]
-                        keep_indices = np.sort(keep_indices)
-                        
-                        pruned_weight = weight_array[keep_indices]
-                        total_pruned += weight_array.size - pruned_weight.size
-                        
-                        new_init = numpy_helper.from_array(pruned_weight, init.name)
-                        initializer_dict[weight_name].CopyFrom(new_init)
-                        
-                        pruned_layers.append({
-                            'layer': node.output[0],
-                            'type': node.op_type,
-                            'original_features': num_rows,
-                            'pruned_features': num_to_prune,
-                            'remaining_features': len(keep_indices)
-                        })
-            
-            except Exception as e:
-                logger.warning(f"Failed to prune layer {node.name}: {e}")
-                continue
+                w_arr = numpy_helper.to_array(init)
+                # Keep absolute values for thresholding
+                all_weights.append(np.abs(w_arr).flatten())
+                nodes_to_prune.append((node, weight_name))
+
+        if not all_weights:
+            return model, {'success': False, 'error': 'No pruneable weights found'}
+
+        # 2. Global Threshold
+        global_concat = np.concatenate(all_weights)
+        k = int(len(global_concat) * ratio)
+        # Use partition to find k-th smallest value (threshold)
+        if k >= len(global_concat):
+             k = len(global_concat) - 1
+        threshold = np.partition(global_concat, k)[k]
         
+        total_params = global_concat.size
+        total_zeros = 0
+        pruned_info = []
+
+        # 3. Apply Mask
+        for node, weight_name in nodes_to_prune:
+            init = initializer_dict[weight_name]
+            w_arr = numpy_helper.to_array(init)
+            
+            # Mask
+            mask = np.abs(w_arr) >= threshold
+            new_w_arr = w_arr * mask # Zero out small weights
+            
+            # Check zeros
+            layer_zeros = new_w_arr.size - np.count_nonzero(new_w_arr)
+            total_zeros += layer_zeros
+            
+            # Update Initializer (Shape is PRESERVED)
+            new_init = numpy_helper.from_array(new_w_arr, init.name)
+            initializer_dict[weight_name].CopyFrom(new_init)
+            
+            pruned_info.append({
+                'layer': node.name,
+                'type': node.op_type,
+                'sparsity': layer_zeros / new_w_arr.size
+            })
+
         # Update model initializers
         del pruned_model.graph.initializer[:]
         pruned_model.graph.initializer.extend(initializer_dict.values())
         
-        # Validate model
-        try:
-            onnx.checker.check_model(pruned_model)
-        except Exception as e:
-            logger.warning(f"Model validation warning: {e}")
-            # Continue anyway - model might still be usable
-        
         stats = {
             'total_params': total_params,
-            'pruned_params': total_pruned,
-            'pruning_ratio': total_pruned / total_params if total_params > 0 else 0,
-            'pruned_layers': pruned_layers,
-            'success': True
+            'pruned_params': total_zeros,
+            'pruning_ratio': total_zeros / total_params if total_params > 0 else 0,
+            'method': 'global_unstructured',
+            'success': True,
+            'pruned_layers': pruned_info
         }
         
         return pruned_model, stats
+
+    except Exception as e:
+        logger.error(f"Global pruning failed: {e}")
+        return model, {'success': False, 'error': str(e)}
     
     except Exception as e:
         logger.error(f"Pruning failed: {e}")
@@ -802,3 +787,66 @@ if __name__ == "__main__":
         
         except Exception as e:
             logger.error(f"Test failed: {e}")
+
+def prune_single_node(model, node_name, threshold):
+    """
+    Prune a specific node by zeroing out weights with magnitude < threshold.
+    Returns (success, message, new_sparsity).
+    """
+    graph = model.graph
+    target_node = None
+    
+    # 1. Search in Nodes (Name OR Output[0] as Frontend uses Output[0] as ID)
+    for node in graph.node:
+        if node.name == node_name:
+            target_node = node
+            break
+        if node_name in node.output:
+            target_node = node
+            break
+            
+    if not target_node:
+        return False, f"Node {node_name} not found", 0.0
+
+    if target_node.op_type not in ['Conv', 'Gemm', 'MatMul']:
+        return False, f"Node {node_name} ({target_node.op_type}) is not prunable", 0.0
+
+    initializer_map = {init.name: init for init in graph.initializer}
+    
+    # Find weight input
+    weight_name = None
+    for input_name in target_node.input:
+        if input_name in initializer_map:
+             if len(initializer_map[input_name].dims) >= 2:
+                weight_name = input_name
+                break
+    
+    if not weight_name:
+        return False, "No weights found for this node", 0.0
+
+    try:
+        w_init = initializer_map[weight_name]
+        w_arr = numpy_helper.to_array(w_init)
+        
+        # Apply Threshold Pruning (Unstructured)
+        mask = np.abs(w_arr) >= threshold
+        new_w_arr = w_arr * mask
+        
+        # Calculate new sparsity
+        zeros = np.count_nonzero(new_w_arr == 0)
+        total = new_w_arr.size
+        sparsity = zeros / total if total > 0 else 0
+        
+        # Update Initializer
+        new_tensor = numpy_helper.from_array(new_w_arr, name=weight_name)
+        
+        # Replace in graph
+        graph.initializer.remove(w_init)
+        graph.initializer.extend([new_tensor])
+        
+        logger.info(f"Pruned node {node_name} (weight: {weight_name}) with threshold {threshold}. New Sparsity: {sparsity:.2%}")
+        return True, f"Pruned {node_name}. New Sparsity: {sparsity:.2%}", sparsity
+
+    except Exception as e:
+        logger.error(f"Error pruning node {node_name}: {e}")
+        return False, str(e), 0.0

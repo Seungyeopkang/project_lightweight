@@ -51,21 +51,31 @@
   border-left: 1px solid #e0e0e0;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling - Improved Clickability */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 14px;
+  /* Wider for easier clicking */
+  height: 14px;
+  /* Taller for horizontal scroll */
 }
 
 ::-webkit-scrollbar-track {
-  background: #f5f5f5;
+  background: #2d2d2d;
+  border-left: 1px solid #3d3d3d;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d0d0d0;
-  border-radius: 4px;
+  background: #555;
+  border-radius: 6px;
+  border: 3px solid #2d2d2d;
+  /* Padding effect */
+  min-height: 40px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #b0b0b0;
+  background: #777;
+}
+
+::-webkit-scrollbar-corner {
+  background: #2d2d2d;
 }

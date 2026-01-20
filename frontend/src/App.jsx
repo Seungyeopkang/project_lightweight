@@ -103,7 +103,7 @@ function App() {
                 cursor: 'pointer'
               }}
             >
-              ↩ Undo
+              Undo
             </button>
           )}
         </div>
@@ -131,7 +131,8 @@ function App() {
           {(() => {
             const stats = selectedNode.data?.statistics || {};
             const attrs = selectedNode.data?.attributes || {};
-            const isConv = selectedNode.type.includes('Conv');
+            // Safety check: ensure type exists before calling includes
+            const isConv = selectedNode.type && selectedNode.type.includes('Conv');
 
             // Helper to safely get shape string
             const getShapeDisplay = (shapes, idx) => {
@@ -162,8 +163,21 @@ function App() {
 
                 {/* Header Name & Type */}
                 <div style={{ marginBottom: '16px', borderLeft: '3px solid #6366f1', paddingLeft: '12px' }}>
-                  <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#fff' }}>
-                    {selectedNode.label} <span style={{ fontSize: '12px', color: '#888', fontWeight: 'normal' }}>[{selectedNode.type}]</span>
+                  <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {selectedNode.label}
+                    <span style={{ fontSize: '12px', color: '#888', fontWeight: 'normal' }}>[{selectedNode.type}]</span>
+                    {stats.dtype && stats.dtype !== 'N/A' && (
+                      <span style={{
+                        fontSize: '10px',
+                        background: '#312e81',
+                        color: '#a5b4fc',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        border: '1px solid #4338ca'
+                      }}>
+                        {stats.dtype}
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -189,54 +203,31 @@ function App() {
                   </div>
                 )}
 
-                {/* Params & Weights Section (For Layers with Weights) */}
-                {stats.params !== undefined && (
-                  <div style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '8px' }}>
-                    <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#ccc', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span>⚖️</span> Params & Weights
+                {/* Params & Weights Section (Always visible now, default 0) */}
+                <div style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#ccc', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>⚖️</span> Params & Weights
+                  </div>
+                  <div style={{ fontSize: '12px', fontFamily: 'monospace', color: '#aaa', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div>
+                      <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Params:</span>
+                      <span style={{ color: '#fff' }}>{(stats.params || 0).toLocaleString()}</span>
                     </div>
-                    <div style={{ fontSize: '12px', fontFamily: 'monospace', color: '#aaa', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <div>
-                        <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Params:</span>
-                        <span style={{ color: '#fff' }}>{stats.params.toLocaleString()}</span>
-                      </div>
-                      <div>
-                        <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Weights:</span>
-                        <span style={{ color: '#fff' }}>[{stats.weight_shape?.join(', ')}]</span>
-                      </div>
-                      <div>
-                        <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Sparsity:</span>
-                        <span style={{ color: stats.sparsity > 50 ? '#4CAF50' : '#f59e0b', fontWeight: 'bold' }}>
-                          {stats.sparsity}%
-                        </span>
-                      </div>
+                    <div>
+                      <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Weights:</span>
+                      <span style={{ color: '#fff' }}>[{stats.weight_shape?.join(', ') || 'None'}]</span>
+                    </div>
+                    <div>
+                      <span style={{ color: '#888', display: 'inline-block', width: '60px' }}>Sparsity:</span>
+                      <span style={{ color: (stats.sparsity || 0) > 50 ? '#4CAF50' : ((stats.sparsity || 0) > 0 ? '#f59e0b' : '#888'), fontWeight: 'bold' }}>
+                        {stats.sparsity || 0}%
+                      </span>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
             );
           })()}
-
-          {/* Fallback Raw Data (Collapsible or just hidden if attributes exist) */}
-          {(!selectedNode.data?.attributes || Object.keys(selectedNode.data.attributes).length === 0) && (
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#888', textTransform: 'uppercase', marginBottom: '8px' }}>
-                Raw Data
-              </div>
-              <div style={{
-                background: 'rgba(0,0,0,0.3)',
-                padding: '10px',
-                borderRadius: '6px',
-                border: '1px solid rgba(255,255,255,0.1)',
-                maxHeight: '200px',
-                overflow: 'auto'
-              }}>
-                <pre style={{ fontSize: '11px', color: '#a0aec0', margin: 0, fontFamily: 'Consolas, Monaco, monospace' }}>
-                  {JSON.stringify(selectedNode.data || selectedNode, null, 2)}
-                </pre>
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         <div style={{ padding: '20px', color: '#666', textAlign: 'center', marginTop: '20px' }}>
@@ -266,7 +257,7 @@ function App() {
               fontWeight: '600'
             }}
           >
-            🔄 Reset
+            Reset
           </button>
           <button
             onClick={handleUnload}
@@ -281,7 +272,7 @@ function App() {
               fontWeight: '600'
             }}
           >
-            ✖ Unload
+            Unload
           </button>
         </div>
       )}
