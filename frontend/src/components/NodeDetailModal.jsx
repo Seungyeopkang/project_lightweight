@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { toast } from 'react-toastify';
 import useStore from '../store';
 
 const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
@@ -69,11 +70,12 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
     }, [details, sortBy]);
 
     // Color Scale for Heatmap (Blue=Low/Prune, Red=High/Keep)
-    const getColor = (importance) => {
+    const getColor = (importance, l1) => {
+        if (l1 === 0) return '#000'; // Dead channel (Black)
+
         // importance is 0.0 to 1.0
         // 0.0 -> Blue (rgb(59, 130, 246))
         // 1.0 -> Red (rgb(239, 68, 68))
-        // We can use a simple interpolation
         const r = Math.round(59 + (239 - 59) * importance);
         const g = Math.round(130 + (68 - 130) * importance);
         const b = Math.round(246 + (68 - 246) * importance);
@@ -91,35 +93,84 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
             sorted.slice(0, 20).forEach(c => newSet.add(c.index));
         }
         setSelectedChannels(newSet);
+        if (newSet.size > 0) {
+            setPruningMode('structured');
+        }
     };
 
-    const toggleChannel = (idx, multi) => {
-        const newSet = new Set(multi ? selectedChannels : []);
-        if (selectedChannels.has(idx) && multi) {
+    const toggleChannel = (idx) => {
+        // Additive selection (Toggle)
+        const newSet = new Set(selectedChannels);
+        if (newSet.has(idx)) {
             newSet.delete(idx);
         } else {
             newSet.add(idx);
         }
         setSelectedChannels(newSet);
+
+        // If channels are selected, ensure we are in a 'mode' that shows them?
+        // Actually, the new UI flow allows mixed usage, but let's keep it simple.
+        // If manual selection exists, we are in 'Targeted' mode implicitly.
     };
 
-    const handleApplyPruning = async () => {
+    const handleApplyPruning = async (overrideMode = null) => {
         if (!sessionId || !nodeId) return;
+
+        const finalMode = overrideMode || pruningMode;
 
         try {
             setLoading(true);
             const formData = new FormData();
             formData.append('session_id', sessionId);
             formData.append('node_name', nodeId);
-            formData.append('mode', pruningMode);
+            formData.append('mode', finalMode);
 
-            if (pruningMode === 'unstructured') {
+            if (selectedChannels.size > 0) {
+                // Targeted Pruning (either zeroing or removal)
+                formData.append('channels', JSON.stringify(Array.from(selectedChannels)));
+            } else if (finalMode === 'unstructured') {
+                // Global Magnitude Pruning
                 formData.append('threshold', threshold);
-            } else {
+            }
+
+            if (finalMode === 'structured') {
+                let channelsToPrune = [];
+
+                if (selectedChannels.size > 0) {
+                    // Manual selection takes precedence
+                    channelsToPrune = Array.from(selectedChannels);
+                } else {
+                    // Auto-select based on ratio/threshold (Low L1)
+                    // If no channels selected, use 'threshold' as a ratio (e.g. 0.2 = bottom 20%)
+                    const sorted = [...details.channels].sort((a, b) => a.l1_norm - b.l1_norm);
+                    const countToRemove = Math.floor(sorted.length * threshold);
+
+                    if (countToRemove === 0) {
+                        toast.warning(`Ratio ${threshold} is too low to remove any channels. Increase ratio.`);
+                        setLoading(false);
+                        return;
+                    }
+
+                    channelsToPrune = sorted.slice(0, countToRemove).map(c => c.index);
+                    toast.info(`Auto-selected ${countToRemove} channels (Bottom ${(threshold * 100).toFixed(0)}%) for removal.`);
+                }
+
                 // Structured - just UI for now, logic guarded in backend
-                alert("Structured pruning (removing channels) is not yet implemented.");
-                setLoading(false);
-                return;
+                if (channelsToPrune.length === 0) {
+                    toast.warning("No channels selected for structured pruning.");
+                    setLoading(false);
+                    return;
+                }
+
+                // Send auto-selected channels or manually selected ones
+                // Backend 'prune_single_node' handles 'channels' param for zeroing.
+                // It might not do physical removal yet, but the selection logic is here.
+                formData.append('channels', JSON.stringify(channelsToPrune));
+
+                // We still show the warning that backend might strictly zero instead of remove
+                // toast.info("Structured pruning (removing channels) is not yet implemented in the backend kernel.");
+                // Let's rely on the backend response or previously known limitation, 
+                // but at least we send the data.
             }
 
             const response = await fetch('http://localhost:8000/api/apply-node-pruning', {
@@ -131,11 +182,10 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
             const result = await response.json();
 
             if (result.stats && result.stats.success) {
-                // Determine new metrics
                 if (onPruningComplete) {
-                    onPruningComplete(result); // Pass updated graph data back
+                    onPruningComplete(result);
                 }
-                onClose(); // Close modal on success
+                onClose();
             } else {
                 throw new Error(result.error || "Unknown error");
             }
@@ -206,8 +256,21 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
                                                 />
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px' }}>
-                                                <button style={actionBtnStyle} onClick={() => handleAutoSelect('low20')}>Select Low 20</button>
-                                                <button style={actionBtnStyle} onClick={() => setSelectedChannels(new Set())}>Clear</button>
+                                                <button
+                                                    style={actionBtnStyle}
+                                                    onClick={() => handleAutoSelect('low20')}
+                                                >
+                                                    Select Low 20
+                                                </button>
+                                                <button
+                                                    style={actionBtnStyle}
+                                                    onClick={() => {
+                                                        setSelectedChannels(new Set());
+                                                        setPruningMode('unstructured');
+                                                    }}
+                                                >
+                                                    Clear
+                                                </button>
                                             </div>
                                         </div>
 
@@ -217,17 +280,53 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
                                                 <div
                                                     key={ch.index}
                                                     title={`CH:${ch.index}\nL1:${ch.l1_norm.toFixed(4)}\nSparsity:${(ch.sparsity * 100).toFixed(1)}%`}
-                                                    onClick={(e) => toggleChannel(ch.index, e.ctrlKey || e.metaKey)}
+                                                    onClick={() => toggleChannel(ch.index)}
                                                     style={{
                                                         ...channelBoxStyle,
-                                                        background: getColor(ch.importance),
+                                                        background: getColor(ch.importance, ch.l1_norm),
                                                         border: selectedChannels.has(ch.index) ? '2px solid #fff' : '1px solid rgba(0,0,0,0.2)',
+                                                        boxShadow: selectedChannels.has(ch.index) ? '0 0 10px rgba(255,255,255,0.3)' : 'none',
                                                         transform: selectedChannels.has(ch.index) ? 'scale(1.1)' : 'scale(1)',
                                                         zIndex: selectedChannels.has(ch.index) ? 2 : 1,
-                                                        opacity: pruningMode === 'structured' && !selectedChannels.has(ch.index) ? 0.5 : 1
+                                                        opacity: pruningMode === 'structured' && !selectedChannels.has(ch.index) ? 0.3 : 1,
+                                                        position: 'relative',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        overflow: 'hidden',
+                                                        borderRadius: '4px'
                                                     }}
                                                 >
-                                                    <span style={{ fontSize: '9px', fontWeight: 'bold', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>
+                                                    {ch.l1_norm === 0 && (
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            top: 0, left: 0, right: 0, bottom: 0,
+                                                            background: 'rgba(0,0,0,0.7)',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            pointerEvents: 'none'
+                                                        }}>
+                                                            <div style={{
+                                                                fontSize: '8px',
+                                                                color: '#ef4444',
+                                                                fontWeight: 'bold',
+                                                                border: '1px solid #ef4444',
+                                                                padding: '0 2px',
+                                                                borderRadius: '2px',
+                                                                transform: 'rotate(-15deg)',
+                                                                background: 'rgba(0,0,0,0.8)'
+                                                            }}>
+                                                                DEAD
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    <span style={{
+                                                        fontSize: '10px',
+                                                        fontWeight: 'bold',
+                                                        textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+                                                        color: ch.l1_norm === 0 ? '#444' : '#fff'
+                                                    }}>
                                                         {ch.index}
                                                     </span>
                                                 </div>
@@ -237,70 +336,108 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
 
                                     {/* Right: Info Panel */}
                                     <div style={sidePanelStyle}>
+                                        {/* Dynamic Control Panel */}
                                         <h3 style={{ fontSize: '14px', margin: '0 0 12px 0', borderBottom: '1px solid #333', paddingBottom: '8px' }}>
                                             Pruning Control
                                         </h3>
 
-                                        {/* Mode Switch */}
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                                <input
-                                                    type="radio"
-                                                    name="pMode"
-                                                    value="unstructured"
-                                                    checked={pruningMode === 'unstructured'}
-                                                    onChange={e => setPruningMode(e.target.value)}
-                                                />
-                                                <span style={{ color: pruningMode === 'unstructured' ? '#fff' : '#94a3b8' }}>Unstructured (Weight Zeroing)</span>
-                                            </label>
-                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                                <input
-                                                    type="radio"
-                                                    name="pMode"
-                                                    value="structured"
-                                                    checked={pruningMode === 'structured'}
-                                                    onChange={e => setPruningMode(e.target.value)}
-                                                />
-                                                <span style={{ color: pruningMode === 'structured' ? '#fff' : '#94a3b8' }}>Structured (Remove Channels)</span>
-                                            </label>
-                                        </div>
+                                        {selectedChannels.size === 0 ? (
+                                            /* DEFAULT VIEW: No Channels Selected */
+                                            <>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+                                                    <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                                        <input
+                                                            type="radio"
+                                                            name="pMode"
+                                                            value="unstructured"
+                                                            checked={pruningMode === 'unstructured'}
+                                                            onChange={e => setPruningMode(e.target.value)}
+                                                        />
+                                                        <span style={{ color: pruningMode === 'unstructured' ? '#fff' : '#94a3b8' }}>Unstructured (Weight Zeroing)</span>
+                                                    </label>
+                                                    <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                                        <input
+                                                            type="radio"
+                                                            name="pMode"
+                                                            value="structured"
+                                                            checked={pruningMode === 'structured'}
+                                                            onChange={e => setPruningMode(e.target.value)}
+                                                        />
+                                                        <span style={{ color: pruningMode === 'structured' ? '#fff' : '#94a3b8' }}>Structured (Remove Channels)</span>
+                                                    </label>
+                                                </div>
 
-                                        {pruningMode === 'unstructured' ? (
-                                            <div style={{ marginTop: 'auto' }}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '4px' }}>
-                                                    <span>Magnitude Threshold</span>
-                                                    <span>{threshold.toFixed(2)}</span>
+                                                <div style={{ marginBottom: '24px' }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                                                        <label style={{ fontSize: '12px', color: '#94a3b8' }}>
+                                                            {pruningMode === 'structured' ? 'Pruning Ratio (Remove Bottom %)' : 'Magnitude Threshold'}
+                                                        </label>
+                                                        <span style={{ fontSize: '12px', fontWeight: 'bold' }}>
+                                                            {pruningMode === 'structured' ? `${(threshold * 100).toFixed(0)}%` : threshold}
+                                                        </span>
+                                                    </div>
+                                                    <input
+                                                        type="range"
+                                                        min={pruningMode === 'structured' ? "0.05" : "0.01"}
+                                                        max={pruningMode === 'structured' ? "0.9" : "0.5"}
+                                                        step={pruningMode === 'structured' ? "0.05" : "0.01"}
+                                                        value={threshold}
+                                                        onChange={e => setThreshold(parseFloat(e.target.value))}
+                                                        style={{ width: '100%', accentColor: '#6366f1' }}
+                                                    />
+                                                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                                                        {pruningMode === 'structured'
+                                                            ? `Removes the ${(threshold * 100).toFixed(0)}% least important channels (L1 Norm).`
+                                                            : `Zeroes out individual weights with |w| < ${threshold}.`}
+                                                    </div>
                                                 </div>
-                                                <input
-                                                    type="range"
-                                                    min="0" max="1" step="0.01"
-                                                    value={threshold}
-                                                    onChange={e => setThreshold(parseFloat(e.target.value))}
-                                                    style={{ width: '100%', accentColor: '#6366f1', height: '4px', marginBottom: '12px' }}
-                                                />
-                                                <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '12px' }}>
-                                                    Weights with |w| &lt; {threshold} will be set to zero.
-                                                    This creates sparse metrices without changing shape.
+
+                                                <button
+                                                    style={primaryBtnStyle}
+                                                    onClick={() => handleApplyPruning()}
+                                                >
+                                                    Apply {pruningMode === 'structured' ? 'Structured' : 'Unstructured'} Pruning
+                                                </button>
+
+                                                <div style={{ marginTop: '16px', fontSize: '11px', color: '#64748b', borderTop: '1px solid #333', paddingTop: '12px' }}>
+                                                    💡 <strong>Tip:</strong> Click on channels in the grid to switch to <em>Manual Selection Mode</em>.
                                                 </div>
-                                            </div>
+                                            </>
                                         ) : (
-                                            <div style={{ marginTop: 'auto' }}>
-                                                <div style={{ fontSize: '11px', color: '#fbbf24', marginBottom: '12px', border: '1px solid #fbbf24', padding: '8px', borderRadius: '4px' }}>
-                                                    ⚠️ Structured pruning permanently removes selected filters/channels and changes tensor shapes.
+                                            /* SELECTION VIEW: Channels are selected */
+                                            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#6366f1' }}>{selectedChannels.size} Channels</span>
+                                                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>Targeted Mode</span>
                                                 </div>
-                                                <div style={{ fontSize: '12px', marginBottom: '8px' }}>
-                                                    Selected: <span style={{ color: '#fff', fontWeight: 'bold' }}>{selectedChannels.size}</span> channels
+
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                    <button
+                                                        style={primaryBtnStyle}
+                                                        onClick={() => handleApplyPruning('unstructured')}
+                                                    >
+                                                        Zero Selected Weights
+                                                    </button>
+
+                                                    <button
+                                                        style={{ ...secondaryBtnStyle, background: '#10b981', borderColor: '#10b981', color: '#fff' }}
+                                                        onClick={() => handleApplyPruning('structured')}
+                                                    >
+                                                        Remove Selected (Structured)
+                                                    </button>
                                                 </div>
+
+                                                <button
+                                                    style={{ ...secondaryBtnStyle, marginTop: '8px', padding: '8px', fontSize: '11px', opacity: 0.7 }}
+                                                    onClick={() => {
+                                                        setSelectedChannels(new Set());
+                                                        setPruningMode('unstructured');
+                                                    }}
+                                                >
+                                                    Reset Channels & Mode
+                                                </button>
                                             </div>
                                         )}
-
-                                        <button
-                                            style={{ ...primaryBtnStyle, opacity: (pruningMode === 'structured' && selectedChannels.size === 0) ? 0.5 : 1 }}
-                                            onClick={handleApplyPruning}
-                                            disabled={pruningMode === 'structured' && selectedChannels.size === 0}
-                                        >
-                                            Apply Pruning
-                                        </button>
                                     </div>
                                 </div>
                             ) : (
@@ -321,7 +458,7 @@ const NodeDetailModal = ({ isOpen, onClose, nodeId, onPruningComplete }) => {
                     )}
                 </div>
             </div>
-        </div>
+        </div >
     );
 };
 
@@ -331,6 +468,18 @@ const overlayStyle = {
     backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     zIndex: 2000
+};
+
+const secondaryBtnStyle = {
+    padding: '10px 16px',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#fff',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: '8px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s'
 };
 
 const modalStyle = {

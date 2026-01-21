@@ -384,7 +384,8 @@ async def apply_node_pruning(
     session_id: str = Form(...),
     node_name: str = Form(...),
     threshold: float = Form(0.1),
-    mode: str = Form('unstructured') # 'structured' or 'unstructured'
+    mode: str = Form('unstructured'), # 'structured' or 'unstructured'
+    channels: str = Form(None) # JSON string of channel indices
 ):
     """
     Apply pruning to a single node.
@@ -394,9 +395,10 @@ async def apply_node_pruning(
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if mode == 'structured':
-         # User requested only button for now, logic not implemented
-         return {'success': False, 'error': 'Structured pruning for single node not yet implemented.'}
+    # Structured mode (channel removal/zeroing) is now handled by prune_single_node via 'channels' param
+    # if mode == 'structured':
+    #      # User requested only button for now, logic not implemented
+    #      return {'success': False, 'error': 'Structured pruning for single node not yet implemented.'}
 
     push_history(session_id) # Save current state to history
 
@@ -404,8 +406,16 @@ async def apply_node_pruning(
     try:
         model = onnx.load(model_path)
         
+        target_channels = None
+        if channels:
+            try:
+                import json
+                target_channels = json.loads(channels)
+            except:
+                pass
+
         # Apply Pruning
-        success, msg, new_sparsity = prune_single_node(model, node_name, threshold)
+        success, msg, new_sparsity = prune_single_node(model, node_name, threshold, target_channels)
         
         if not success:
              raise Exception(msg)

@@ -788,9 +788,11 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Test failed: {e}")
 
-def prune_single_node(model, node_name, threshold):
+def prune_single_node(model, node_name, threshold=0.1, target_channels=None):
     """
-    Prune a specific node by zeroing out weights with magnitude < threshold.
+    Prune a specific node.
+    - If target_channels is provided, it zeros out those specific channels/filters.
+    - Otherwise, it zeros out weights with magnitude < threshold (unstructured).
     Returns (success, message, new_sparsity).
     """
     graph = model.graph
@@ -828,9 +830,20 @@ def prune_single_node(model, node_name, threshold):
         w_init = initializer_map[weight_name]
         w_arr = numpy_helper.to_array(w_init)
         
-        # Apply Threshold Pruning (Unstructured)
-        mask = np.abs(w_arr) >= threshold
-        new_w_arr = w_arr * mask
+        if target_channels is not None and len(target_channels) > 0:
+            # Custom Channel-wise Unstructured Pruning (Zeroing specific channels)
+            # For Conv: (Out, In, H, W) -> Zero index 'Out'
+            # For Gemm: (Out, In) or (In, Out) -> Usually (Out, In) if transB=1
+            new_w_arr = w_arr.copy()
+            for ch_idx in target_channels:
+                if ch_idx < new_w_arr.shape[0]:
+                    new_w_arr[ch_idx] = 0
+            msg = f"Zeroed {len(target_channels)} channels"
+        else:
+            # Global Magnitude Threshold Pruning (Unstructured)
+            mask = np.abs(w_arr) >= threshold
+            new_w_arr = w_arr * mask
+            msg = f"Pruned with threshold {threshold}"
         
         # Calculate new sparsity
         zeros = np.count_nonzero(new_w_arr == 0)
@@ -844,8 +857,8 @@ def prune_single_node(model, node_name, threshold):
         graph.initializer.remove(w_init)
         graph.initializer.extend([new_tensor])
         
-        logger.info(f"Pruned node {node_name} (weight: {weight_name}) with threshold {threshold}. New Sparsity: {sparsity:.2%}")
-        return True, f"Pruned {node_name}. New Sparsity: {sparsity:.2%}", sparsity
+        logger.info(f"Pruned node {node_name} (weight: {weight_name}). New Sparsity: {sparsity:.2%}")
+        return True, f"{msg}. New Sparsity: {sparsity:.2%}", sparsity
 
     except Exception as e:
         logger.error(f"Error pruning node {node_name}: {e}")

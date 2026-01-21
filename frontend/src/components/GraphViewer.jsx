@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import NodeDetailModal from './NodeDetailModal';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import { toast } from 'react-toastify';
 import useStore from '../store';
 
 cytoscape.use(dagre);
@@ -53,7 +54,11 @@ function GraphViewer() {
 
   const [zoomLevel, setZoomLevel] = useState(1);
   const modelJson = useStore((state) => state.modelJson);
+  const graphData = useStore((state) => state.graphData);
+  const selectedNode = useStore((state) => state.selectedNode);
   const setSelectedNode = useStore((state) => state.setSelectedNode);
+  const updateGraphData = useStore((state) => state.updateGraphData);
+  const addToHistory = useStore((state) => state.addToHistory);
 
   // Modal State
   const [showModal, setShowModal] = useState(false);
@@ -826,9 +831,26 @@ function GraphViewer() {
           isOpen={showModal}
           onClose={() => setShowModal(false)}
           nodeId={modalContent}
-          onPruningComplete={(stats) => {
-            alert(`Pruning Applied!\n${stats.message}`);
-            refreshGraph();
+          onPruningComplete={(result) => {
+            if (result && result.stats && result.stats.success) {
+              const stats = result.stats || {};
+              const msg = stats.message || "Pruning Applied!";
+
+              toast.success(
+                <div style={{ padding: '4px' }}>
+                  <div style={{ fontWeight: 600, color: '#4ade80', marginBottom: '4px' }}>✨ Pruning Successful</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>{msg}</div>
+                </div>,
+                { icon: "✂️" }
+              );
+
+              if (stats.node_id) {
+                addToHistory(`Pruned Node: ${stats.node_id} (${msg.split('.')[0]})`);
+              }
+
+              // Critical: result itself is the new graph_data (returned by parse_onnx_graph_hierarchical)
+              updateGraphData(result);
+            }
           }}
         />
       </div>
